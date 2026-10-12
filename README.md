@@ -4,14 +4,6 @@
 
 Play Sega's 1998 light-gun arcade game **L.A. Machineguns: Rage of the Machines** in VR. This is a fork of the [Supermodel](https://github.com/trzy/Supermodel) Sega Model 3 emulator with an OpenXR mode. Your PC runs the emulator and streams it to the headset.
 
-- **Stereo 3D:** the game's 3D world is drawn in stereo around you, with head tracking.
-- **The controller is the gun:** the game's own crosshair follows the controller and lands exactly where the shots go.
-- **Shoot the whole view:** you can shoot anywhere in the headset's view, not just inside the original 4:3 screen.
-- **Steady frame rate:** the game runs at its real 60 fps whatever the headset's refresh rate, and the headset never waits for the emulator.
-- **Readable overlay:** score, timer and on-screen text follow your head during play, while menus and the title screen stay fixed in the room.
-- **No black bars:** the cutscene letterbox bars are removed, and the text inside them stays.
-- **Fast start:** the first start shows the arcade's GB2 boot screen once; after that the game opens on the SEGA logo.
-
 Developed and tested on a Meta Quest 3 streamed with **Virtual Desktop** (VDXR runtime). Meta Quest Link and SteamVR are standard OpenXR runtimes and should work too.
 
 > **No game files are included.** You need your own `lamachin.zip` ROM set, dumped from hardware you own. Please don't open issues or pull requests asking for ROMs.
