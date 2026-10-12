@@ -1,0 +1,72 @@
+name: Windows build (PC VR)
+
+# Every push and pull request builds the Windows package and attaches it to the run as an
+# artifact. Pushing a tag like v0.1.0 also publishes it as a GitHub release.
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >-
+            make
+            zip
+            unzip
+            git
+            mingw64/mingw-w64-x86_64-gcc
+            mingw64/mingw-w64-x86_64-SDL2
+            mingw64/mingw-w64-x86_64-SDL2_net
+
+      - name: Build supermodel.exe
+        run: |
+          set -o pipefail
+          make -f Makefiles/Makefile.Win32 release OPT="-O3" SILENT= -j4 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Package
+        run: |
+          set -e
+          out=pkg/SupermodelVR
+          mkdir -p "$out/Config" "$out/NVRAM" "$out/Saves" "$out/ROMs" "$out/Assets"
+          cp bin64/supermodel.exe "$out/"
+          cp Config/Games.xml Config/Music.xml Config/Supermodel.ini "$out/Config/"
+          cp -r Assets/* "$out/Assets/" 2>/dev/null || true
+          cp Docs/PCVR.txt "$out/README-VR.txt"
+          cp LICENSE "$out/LICENSE.txt"
+          cp Scripts/vr/*.bat "$out/"
+          echo "Put your own lamachin.zip ROM set here." > "$out/ROMs/PUT-ROMS-HERE.txt"
+          # Official Khronos OpenXR loader (Apache-2.0, static CRT, no other DLLs needed).
+          curl -sSL -o loader.zip https://github.com/KhronosGroup/OpenXR-SDK-Source/releases/download/release-1.1.49/openxr_loader_windows-1.1.49.zip
+          unzip -q loader.zip -d loader
+          cp "$(find loader -path '*x64*' -name openxr_loader.dll | head -n1)" "$out/openxr_loader.dll"
+          ./bin64/supermodel.exe -print-games > /dev/null
+          (cd pkg && zip -qr SupermodelVR-windows.zip SupermodelVR)
+          ls -la pkg "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SupermodelVR-windows
+          path: pkg/SupermodelVR-windows.zip
+
+      - name: Publish release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pkg/SupermodelVR-windows.zip
+          generate_release_notes: true

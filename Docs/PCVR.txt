@@ -1,0 +1,84 @@
+SUPERMODEL VR (PC) - L.A. MACHINEGUNS
+=====================================
+
+What this is
+  Desktop Supermodel (the same emulator the Steam Deck runs) with an OpenXR VR mode.
+  The PC runs the game at full speed and streams it to the Quest 3. The 3D world is drawn
+  in stereo around you; scores and text float on a screen-sized panel in front of you.
+
+Before you start (once)
+  1. Put lamachin.zip in the ROMs folder (or keep it in the folder above this one).
+  2. Choose ONE way to connect the Quest and make it the active OpenXR runtime:
+     - Virtual Desktop: in the Streamer app on the PC, set "OpenXR Runtime" to VDXR.
+     - Meta Quest Link (cable or Air Link): Meta Quest Link app > Settings > General >
+       "OpenXR Runtime" > Set Meta Quest Link as active.
+     - SteamVR: SteamVR settings > OpenXR > set SteamVR as the OpenXR runtime.
+
+Playing
+  1. Connect the headset (Virtual Desktop streaming, Link, or SteamVR running).
+  2. Double-click "Play LA Machineguns VR.bat".
+  3. In the headset:
+       Trigger (either hand) ... fire; the hand you fire with is the gun
+       A or Y .................. Start
+       B or X .................. Coin
+       Right stick click ....... re-centre the view (game screen straight ahead)
+       Left grip + left stick click ... Test (operator menu) - not needed to play
+     The game's own crosshair follows the controller, exactly like the mouse / Steam
+     Deck touchpad does, and it is not limited to the original 4:3 screen: you can aim and
+     shoot about a screen-width past each edge, which covers the whole view in the headset.
+     (VRPointer = 1 in Config/Supermodel.ini adds a red helper ring.)
+  4. Esc on the keyboard quits. A normal window on the PC mirrors the game.
+
+Smoothest motion
+  The game runs at 60 fps. At 120 Hz every game frame is shown for exactly two headset
+  frames, so motion and the crosshair are perfectly even. Supermodel asks for 120 Hz;
+  if your streaming app overrides it, set 120 Hz there (Virtual Desktop: Streaming tab >
+  Frame rate 120; Quest Link: Meta Quest Link app > Devices > Graphics preferences >
+  Refresh rate 120). At 72 or 90 Hz some game frames stay up longer than others.
+
+Virtual Desktop settings for smooth play
+  Streaming tab: Frame rate 72 (or 90 if it holds), Synchronous Spacewarp: Disabled.
+  With Spacewarp on, Virtual Desktop halves the game to 36 fps whenever a frame is late,
+  which looks choppy and makes the crosshair lag.
+
+Settings (Config/Supermodel.ini, [ Global ])
+  VRResolutionScale     1.0 = headset's recommended eye size; raise for sharper image
+  VRMaxEyeWidth         cap on pixels per eye (1664). Higher = sharper but more work per
+                        frame; raise it (e.g. 2048) only if the headset stays at full rate
+  VRHudDistance         metres to the text panel (20 - far, so text and crosshair sit at
+                        the same depth as the 3D world and never look doubled)
+  VRWorldUnitsPerMeter  stereo scale of the 3D world (1.0)
+  VRPositionalTracking  1 = lean in the world, 0 = rotation only
+  VRRefreshHz           headset refresh to ask for (120); 0 = leave it alone
+  VRPointer             1 = show an extra red pointer ring (off by default)
+  VRHideLetterbox       1 = remove the black cutscene bars (text inside them stays)
+  VRMirror              1 = also show the game in the PC window. Switched off automatically
+                        for the session if presenting it would slow the headset down
+  VRAsyncFrames         1 = the game runs at its own 60 fps, the headset never waits for it
+  VRHudLock             2 = score, timer and text follow your head during play and
+                        cutscenes and stay fixed in the room on menus; 1 = always follow the
+                        head; 0 = always fixed in the room
+  VRHudLayer            0 = draw score/crosshair into the 3D image (exact alignment);
+                        1 = use a separate compositor layer (sharper text, may drift)
+  VRGunCalibration      1 = set the wide gun calibration in the game (see below)
+  VRAimScaleX/Y, VRAimOffsetX/Y
+                        gun correction measured for this game's calibration, so the
+                        crosshair lands where you point - leave as is
+
+Start-up
+  The game waits until the headset is in use, so you can start it from the PC and then put
+  the headset on without missing the opening.
+  The first VR start shows the arcade's "GB2 System Initializing" screen once; a snapshot is
+  saved the moment the SEGA logo appears, and every later start opens on the SEGA logo,
+  followed by the title screen.
+  To redo it, delete Saves\lamachin.vrlogo.
+
+Gun calibration
+  The VR build sets the game's light gun calibration itself (the range AIM SET would record
+  in the operator menu), wide enough that the game keeps aiming a screen-width past each
+  edge of its 4:3 screen. No NVRAM file is needed. VRGunCalibration = 0 turns this off
+  (then do AIM SET in the operator menu yourself).
+
+If VR does not start
+  A message box says why and the game runs in a normal window. Supermodel.log in this
+  folder has the details (lines starting with "VR:").

@@ -1,0 +1,1353 @@
+#ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
+  #include <windows.h>
+  #include <unknwn.h>
+#endif
+
+#include "DesktopXR.h"
+
+#ifdef _WIN32
+  #define XR_USE_PLATFORM_WIN32
+#else
+  #include <dlfcn.h>
+  #include <GL/glxew.h>
+  #define XR_USE_PLATFORM_XLIB
+#endif
+#define XR_USE_GRAPHICS_API_OPENGL
+#include <openxr/openxr_platform.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+
+// Supermodel's logger (OSD/Logger.h is not included: its INT64 typedef clashes with X11's).
+extern void InfoLog(const char *fmt, ...);
+#define ErrorLog(fmt, ...) InfoLog("ERROR: " fmt, ##__VA_ARGS__)
+
+// ---------------------------------------------------------------------------------------------
+// Dynamically loaded OpenXR entry points (XR_NO_PROTOTYPES is set in the header).
+// ---------------------------------------------------------------------------------------------
+
+#define XR_GLOBAL_FUNCS(X) \
+  X(xrEnumerateInstanceExtensionProperties) \
+  X(xrCreateInstance)
+
+#define XR_INSTANCE_FUNCS(X) \
+  X(xrDestroyInstance) X(xrGetInstanceProperties) X(xrGetSystem) X(xrResultToString) \
+  X(xrPollEvent) X(xrCreateSession) X(xrDestroySession) X(xrBeginSession) X(xrEndSession) \
+  X(xrRequestExitSession) X(xrCreateReferenceSpace) X(xrDestroySpace) X(xrLocateSpace) \
+  X(xrEnumerateSwapchainFormats) X(xrCreateSwapchain) X(xrDestroySwapchain) \
+  X(xrEnumerateSwapchainImages) X(xrAcquireSwapchainImage) X(xrWaitSwapchainImage) \
+  X(xrReleaseSwapchainImage) X(xrEnumerateViewConfigurationViews) X(xrWaitFrame) \
+  X(xrBeginFrame) X(xrEndFrame) X(xrLocateViews) X(xrStringToPath) X(xrCreateActionSet) \
+  X(xrDestroyActionSet) X(xrCreateAction) X(xrSuggestInteractionProfileBindings) \
+  X(xrCreateActionSpace) X(xrAttachSessionActionSets) X(xrSyncActions) \
+  X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetOpenGLGraphicsRequirementsKHR)
+
+namespace {
+
+PFN_xrGetInstanceProcAddr xrGetInstanceProcAddr = nullptr;
+#define XR_DECLARE(name) PFN_##name name = nullptr;
+XR_GLOBAL_FUNCS(XR_DECLARE)
+XR_INSTANCE_FUNCS(XR_DECLARE)
+#undef XR_DECLARE
+PFN_xrRequestDisplayRefreshRateFB pfnRequestDisplayRefreshRateFB = nullptr;
+
+void QuatToMat3(const XrQuaternionf& q, float m[9])
+{
+  const float x = q.x, y = q.y, z = q.z, w = q.w;
+  m[0] = 1 - 2 * (y * y + z * z); m[3] = 2 * (x * y - w * z);     m[6] = 2 * (x * z + w * y);
+  m[1] = 2 * (x * y + w * z);     m[4] = 1 - 2 * (x * x + z * z); m[7] = 2 * (y * z - w * x);
+  m[2] = 2 * (x * z - w * y);     m[5] = 2 * (y * z + w * x);     m[8] = 1 - 2 * (x * x + y * y);
+}
+
+XrVector3f Rotate(const XrQuaternionf& q, const XrVector3f& v)
+{
+  float m[9];
+  QuatToMat3(q, m);
+  return {m[0] * v.x + m[3] * v.y + m[6] * v.z,
+          m[1] * v.x + m[4] * v.y + m[7] * v.z,
+          m[2] * v.x + m[5] * v.y + m[8] * v.z};
+}
+
+GLuint CompileShader(GLenum type, const char* src)
+{
+  GLuint s = glCreateShader(type);
+  glShaderSource(s, 1, &src, nullptr);
+  glCompileShader(s);
+  GLint ok = 0;
+  glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+  if (!ok) {
+    char log[1024] = {};
+    glGetShaderInfoLog(s, sizeof(log), nullptr, log);
+    ErrorLog("VR: shader compile failed: %s", log);
+    glDeleteShader(s);
+    return 0;
+  }
+  return s;
+}
+
+GLuint LinkProgram(const char* vsSrc, const char* fsSrc)
+{
+  GLuint vs = CompileShader(GL_VERTEX_SHADER, vsSrc);
+  GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fsSrc);
+  if (!vs || !fs)
+    return 0;
+  GLuint p = glCreateProgram();
+  glAttachShader(p, vs);
+  glAttachShader(p, fs);
+  glLinkProgram(p);
+  glDeleteShader(vs);
+  glDeleteShader(fs);
+  GLint ok = 0;
+  glGetProgramiv(p, GL_LINK_STATUS, &ok);
+  if (!ok) {
+    glDeleteProgram(p);
+    return 0;
+  }
+  return p;
+}
+
+// Textured quad spanning uRect (left, right, top, bottom tangents at z = -1), through uMvp.
+// Mode 0: opaque backdrop. Mode 1: premultiplied-alpha HUD layer.
+const char* kQuadVS = R"(#version 330 core
+uniform mat4 uMvp;
+uniform vec4 uRect;
+out vec2 vUv;
+void main() {
+  int id = gl_VertexID;
+  bool left = (id == 0 || id == 2);
+  bool bottom = (id < 2);
+  vUv = vec2(left ? 0.0 : 1.0, bottom ? 1.0 : 0.0);
+  gl_Position = uMvp * vec4(left ? uRect.x : uRect.y, bottom ? uRect.w : uRect.z, -1.0, 1.0);
+})";
+
+const char* kQuadFS = R"(#version 330 core
+uniform sampler2D uTex;
+uniform int uMode;
+uniform vec2 uKeep;   // HUD: v range of the 3D view; black outside it becomes see-through
+uniform vec4 uSubUv;  // mode 2: game area inside the small-viewport texture (u0, v0, u1, v1)
+in vec2 vUv;
+out vec4 fragColor;
+// One texel of the HUD layer, premultiplied; letterbox black becomes fully transparent.
+vec4 hudTexel(ivec2 t, ivec2 size) {
+  t = clamp(t, ivec2(0), size - 1);
+  vec4 c = texelFetch(uTex, t, 0);
+  float row = (float(t.y) + 0.5) / float(size.y);
+  if ((row < uKeep.x || row > uKeep.y) && max(c.r, max(c.g, c.b)) < 0.06) return vec4(0.0);
+  return vec4(c.rgb * c.a, c.a);
+}
+void main() {
+  if (uMode == 0) { fragColor = vec4(texture(uTex, vUv).rgb, 1.0); return; }
+  if (uMode == 2) {
+    // flat-rendered small viewports (GL texture, bottom-up); already alpha-weighted
+    vec4 c = texture(uTex, vec2(mix(uSubUv.x, uSubUv.z, vUv.x), mix(uSubUv.w, uSubUv.y, vUv.y)));
+    fragColor = vec4(c.rgb, c.a);
+    return;
+  }
+  // Bilinear filtering done by hand, after the letterbox keying, so no dark seams remain.
+  ivec2 size = textureSize(uTex, 0);
+  vec2 p = vUv * vec2(size) - 0.5;
+  ivec2 i = ivec2(floor(p));
+  vec2 f = p - floor(p);
+  vec4 a = mix(hudTexel(i, size), hudTexel(i + ivec2(1, 0), size), f.x);
+  vec4 b = mix(hudTexel(i + ivec2(0, 1), size), hudTexel(i + ivec2(1, 1), size), f.x);
+  fragColor = mix(a, b, f.y);
+})";
+
+// Pointer dot: ring + centre dot around uCenter (NDC), radius in NDC height units.
+const char* kDotVS = R"(#version 330 core
+uniform vec2 uCenter;
+uniform float uRadius;
+uniform float uAspect;
+out vec2 vLocal;
+void main() {
+  int id = gl_VertexID;
+  vec2 corner = vec2((id == 1 || id == 3) ? 1.0 : -1.0, (id >= 2) ? 1.0 : -1.0);
+  vLocal = corner;
+  gl_Position = vec4(uCenter + corner * vec2(uRadius / uAspect, uRadius), 0.0, 1.0);
+})";
+
+const char* kDotFS = R"(#version 330 core
+uniform vec3 uColor;
+in vec2 vLocal;
+out vec4 fragColor;
+void main() {
+  float r = length(vLocal);
+  float aa = fwidth(r) * 1.5;
+  float ring = smoothstep(0.62 - aa, 0.62, r) * (1.0 - smoothstep(0.92, 0.92 + aa, r));
+  float dot = 1.0 - smoothstep(0.16, 0.16 + aa, r);
+  float a = max(ring, dot) * 0.9;
+  fragColor = vec4(uColor * a, a);
+})";
+
+} // namespace
+
+// ---------------------------------------------------------------------------------------------
+// Setup / teardown
+// ---------------------------------------------------------------------------------------------
+
+DesktopXR::~DesktopXR()
+{
+  Shutdown();
+}
+
+bool DesktopXR::Fail(const std::string& what)
+{
+  m_error = what;
+  ErrorLog("VR: %s", what.c_str());
+  return false;
+}
+
+bool DesktopXR::Check(XrResult r, const char* what)
+{
+  if (XR_SUCCEEDED(r))
+    return true;
+  if (r == XR_ERROR_INSTANCE_LOST || r == XR_ERROR_SESSION_LOST)
+  {
+    // The VR runtime went away (headset disconnected, VR app closed): keep playing in the
+    // window instead of spinning on a dead session.
+    m_sessionRunning = false;
+    m_frameBegun = false;
+  }
+  char text[XR_MAX_RESULT_STRING_SIZE] = {};
+  if (xrResultToString && m_instance != XR_NULL_HANDLE)
+    xrResultToString(m_instance, r, text);
+  else
+    std::snprintf(text, sizeof(text), "%d", (int)r);
+  return Fail(std::string(what) + " failed: " + text);
+}
+
+bool DesktopXR::LoadLoader()
+{
+#ifdef _WIN32
+  HMODULE lib = LoadLibraryA("openxr_loader.dll");
+  if (!lib)
+    return Fail("openxr_loader.dll not found next to supermodel.exe");
+  m_loaderLib = lib;
+  xrGetInstanceProcAddr = reinterpret_cast<PFN_xrGetInstanceProcAddr>(GetProcAddress(lib, "xrGetInstanceProcAddr"));
+#else
+  void* lib = dlopen("libopenxr_loader.so.1", RTLD_NOW | RTLD_LOCAL);
+  if (!lib)
+    lib = dlopen("libopenxr_loader.so", RTLD_NOW | RTLD_LOCAL);
+  if (!lib)
+    return Fail("libopenxr_loader.so.1 not found");
+  m_loaderLib = lib;
+  xrGetInstanceProcAddr = reinterpret_cast<PFN_xrGetInstanceProcAddr>(dlsym(lib, "xrGetInstanceProcAddr"));
+#endif
+  if (!xrGetInstanceProcAddr)
+    return Fail("OpenXR loader has no xrGetInstanceProcAddr");
+#define XR_LOAD_GLOBAL(name) xrGetInstanceProcAddr(XR_NULL_HANDLE, #name, reinterpret_cast<PFN_xrVoidFunction*>(&name));
+  XR_GLOBAL_FUNCS(XR_LOAD_GLOBAL)
+#undef XR_LOAD_GLOBAL
+  if (!xrEnumerateInstanceExtensionProperties || !xrCreateInstance)
+    return Fail("OpenXR loader is missing core functions");
+  return true;
+}
+
+bool DesktopXR::Init(const Config& config)
+{
+  m_config = config;
+  if (!LoadLoader() || !CreateInstance() || !CreateSession() || !CreateActions() || !CreateShaders())
+    return false;
+
+  uint32_t viewCount = 0;
+  xrEnumerateViewConfigurationViews(m_instance, m_systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &viewCount, nullptr);
+  std::vector<XrViewConfigurationView> views(viewCount, {XR_TYPE_VIEW_CONFIGURATION_VIEW});
+  if (viewCount < 2 ||
+      !Check(xrEnumerateViewConfigurationViews(m_instance, m_systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
+                                               viewCount, &viewCount, views.data()), "xrEnumerateViewConfigurationViews"))
+    return false;
+
+  float scale = std::clamp(m_config.resolutionScale, 0.25f, 2.0f);
+  if (m_config.maxEyeWidth > 0 && views[0].recommendedImageRectWidth * scale > (float)m_config.maxEyeWidth)
+    scale = (float)m_config.maxEyeWidth / (float)views[0].recommendedImageRectWidth;
+  for (int eye = 0; eye < 2; eye++) {
+    int w = (int)std::lround(views[eye].recommendedImageRectWidth * scale);
+    int h = (int)std::lround(views[eye].recommendedImageRectHeight * scale);
+    w = std::clamp(w, 64, (int)views[eye].maxImageRectWidth);
+    h = std::clamp(h, 64, (int)views[eye].maxImageRectHeight);
+    if (!CreateSwapchain(m_eyes[eye], w, h))
+      return false;
+  }
+  // HUD at 3x the Model 3 resolution (496x384), so text stays crisp on the quad.
+  if (!CreateSwapchain(m_hud, 496 * 3, 384 * 3))
+    return false;
+
+  InfoLog("VR: runtime '%s', eyes %dx%d (scale %.2f of %ux%u), HUD %dx%d", m_runtimeName.c_str(),
+          m_eyes[0].width, m_eyes[0].height, scale, views[0].recommendedImageRectWidth,
+          views[0].recommendedImageRectHeight, m_hud.width, m_hud.height);
+  New3D::SetVRFrameTarget(this);
+  return true;
+}
+
+bool DesktopXR::CreateInstance()
+{
+  uint32_t extCount = 0;
+  if (!Check(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extCount, nullptr), "xrEnumerateInstanceExtensionProperties"))
+    return false;
+  std::vector<XrExtensionProperties> exts(extCount, {XR_TYPE_EXTENSION_PROPERTIES});
+  xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount, exts.data());
+  auto has = [&](const char* name) {
+    return std::any_of(exts.begin(), exts.end(), [&](const XrExtensionProperties& e) { return std::strcmp(e.extensionName, name) == 0; });
+  };
+
+  if (!has(XR_KHR_OPENGL_ENABLE_EXTENSION_NAME))
+    return Fail("the active OpenXR runtime does not support OpenGL (XR_KHR_opengl_enable). "
+                "Use Virtual Desktop (VDXR), Meta Quest Link or SteamVR as the OpenXR runtime.");
+  std::vector<const char*> enabled = {XR_KHR_OPENGL_ENABLE_EXTENSION_NAME};
+  m_hasRefreshRate = has(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+  if (m_hasRefreshRate)
+    enabled.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+
+  XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
+  std::strncpy(ci.applicationInfo.applicationName, "Supermodel VR", XR_MAX_APPLICATION_NAME_SIZE - 1);
+  ci.applicationInfo.applicationVersion = 1;
+  std::strncpy(ci.applicationInfo.engineName, "Supermodel", XR_MAX_ENGINE_NAME_SIZE - 1);
+  ci.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
+  ci.enabledExtensionCount = (uint32_t)enabled.size();
+  ci.enabledExtensionNames = enabled.data();
+  XrResult r = xrCreateInstance(&ci, &m_instance);
+  if (XR_FAILED(r)) {
+    char msg[128];
+    std::snprintf(msg, sizeof(msg), "xrCreateInstance failed (%d) - is the headset connected and the VR app "
+                  "(Virtual Desktop / Quest Link / SteamVR) running?", (int)r);
+    return Fail(msg);
+  }
+
+#define XR_LOAD_INSTANCE(name) xrGetInstanceProcAddr(m_instance, #name, reinterpret_cast<PFN_xrVoidFunction*>(&name));
+  XR_INSTANCE_FUNCS(XR_LOAD_INSTANCE)
+#undef XR_LOAD_INSTANCE
+  if (m_hasRefreshRate)
+    xrGetInstanceProcAddr(m_instance, "xrRequestDisplayRefreshRateFB", reinterpret_cast<PFN_xrVoidFunction*>(&pfnRequestDisplayRefreshRateFB));
+#define XR_CHECK_LOADED(name) if (!name) return Fail("OpenXR runtime is missing " #name);
+  XR_INSTANCE_FUNCS(XR_CHECK_LOADED)
+#undef XR_CHECK_LOADED
+
+  XrInstanceProperties props{XR_TYPE_INSTANCE_PROPERTIES};
+  if (XR_SUCCEEDED(xrGetInstanceProperties(m_instance, &props)))
+    m_runtimeName = props.runtimeName;
+
+  XrSystemGetInfo sys{XR_TYPE_SYSTEM_GET_INFO};
+  sys.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+  r = xrGetSystem(m_instance, &sys, &m_systemId);
+  if (XR_FAILED(r))
+    return Fail("no headset found by the OpenXR runtime '" + m_runtimeName + "' - connect the Quest first");
+  return true;
+}
+
+bool DesktopXR::CreateSession()
+{
+  XrGraphicsRequirementsOpenGLKHR reqs{XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR};
+  if (!Check(xrGetOpenGLGraphicsRequirementsKHR(m_instance, m_systemId, &reqs), "xrGetOpenGLGraphicsRequirementsKHR"))
+    return false;
+
+  XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO};
+#ifdef _WIN32
+  XrGraphicsBindingOpenGLWin32KHR binding{XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR};
+  binding.hDC = wglGetCurrentDC();
+  binding.hGLRC = wglGetCurrentContext();
+  if (!binding.hDC || !binding.hGLRC)
+    return Fail("no current OpenGL context");
+#else
+  XrGraphicsBindingOpenGLXlibKHR binding{XR_TYPE_GRAPHICS_BINDING_OPENGL_XLIB_KHR};
+  binding.xDisplay = glXGetCurrentDisplay();
+  binding.glxContext = glXGetCurrentContext();
+  binding.glxDrawable = glXGetCurrentDrawable();
+  if (!binding.xDisplay || !binding.glxContext)
+    return Fail("no current GLX context");
+  int fbConfigId = 0;
+  glXQueryContext(binding.xDisplay, binding.glxContext, GLX_FBCONFIG_ID, &fbConfigId);
+  const int attribs[] = {GLX_FBCONFIG_ID, fbConfigId, None};
+  int n = 0;
+  GLXFBConfig* cfgs = glXChooseFBConfig(binding.xDisplay, DefaultScreen(binding.xDisplay), attribs, &n);
+  if (cfgs && n > 0) {
+    binding.glxFBConfig = cfgs[0];
+    XVisualInfo* vi = glXGetVisualFromFBConfig(binding.xDisplay, cfgs[0]);
+    if (vi) {
+      binding.visualid = (uint32_t)vi->visualid;
+      XFree(vi);
+    }
+  }
+  if (cfgs)
+    XFree(cfgs);
+#endif
+  si.next = &binding;
+  si.systemId = m_systemId;
+  if (!Check(xrCreateSession(m_instance, &si, &m_session), "xrCreateSession"))
+    return false;
+
+  XrReferenceSpaceCreateInfo rs{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+  rs.poseInReferenceSpace.orientation.w = 1.0f;
+  rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+  if (!Check(xrCreateReferenceSpace(m_session, &rs, &m_stageSpace), "create LOCAL space") ||
+      !Check(xrCreateReferenceSpace(m_session, &rs, &m_localSpace), "create LOCAL space"))
+    return false;
+  rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+  if (!Check(xrCreateReferenceSpace(m_session, &rs, &m_viewSpace), "create VIEW space"))
+    return false;
+
+  // Supermodel writes gamma-encoded colours. An sRGB swapchain with GL_FRAMEBUFFER_SRGB off
+  // stores them unchanged and the compositor then reads them as sRGB, which is correct.
+  uint32_t fmtCount = 0;
+  xrEnumerateSwapchainFormats(m_session, 0, &fmtCount, nullptr);
+  std::vector<int64_t> formats(fmtCount);
+  xrEnumerateSwapchainFormats(m_session, fmtCount, &fmtCount, formats.data());
+  for (int64_t f : {(int64_t)GL_SRGB8_ALPHA8, (int64_t)GL_RGBA8}) {
+    if (std::find(formats.begin(), formats.end(), f) != formats.end()) {
+      m_colorFormat = f;
+      break;
+    }
+  }
+  if (!m_colorFormat)
+    return Fail("no usable OpenGL swapchain format");
+  return true;
+}
+
+bool DesktopXR::CreateSwapchain(Swapchain& sc, int w, int h)
+{
+  XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+  ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+  ci.format = m_colorFormat;
+  ci.sampleCount = 1;
+  ci.width = (uint32_t)w;
+  ci.height = (uint32_t)h;
+  ci.faceCount = 1;
+  ci.arraySize = 1;
+  ci.mipCount = 1;
+  if (!Check(xrCreateSwapchain(m_session, &ci, &sc.handle), "xrCreateSwapchain"))
+    return false;
+  sc.width = w;
+  sc.height = h;
+
+  uint32_t count = 0;
+  xrEnumerateSwapchainImages(sc.handle, 0, &count, nullptr);
+  std::vector<XrSwapchainImageOpenGLKHR> images(count, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR});
+  if (!Check(xrEnumerateSwapchainImages(sc.handle, count, &count,
+                                        reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data())), "xrEnumerateSwapchainImages"))
+    return false;
+
+  sc.images.resize(count);
+  sc.fbos.resize(count);
+  glGenFramebuffers((GLsizei)count, sc.fbos.data());
+  for (uint32_t i = 0; i < count; i++) {
+    sc.images[i] = images[i].image;
+    glBindFramebuffer(GL_FRAMEBUFFER, sc.fbos[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, images[i].image, 0);
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      char msg[64];
+      std::snprintf(msg, sizeof(msg), "swapchain framebuffer incomplete (0x%x)", status);
+      return Fail(msg);
+    }
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  return true;
+}
+
+void DesktopXR::DestroySwapchain(Swapchain& sc)
+{
+  if (!sc.fbos.empty())
+    glDeleteFramebuffers((GLsizei)sc.fbos.size(), sc.fbos.data());
+  if (sc.handle != XR_NULL_HANDLE && xrDestroySwapchain)
+    xrDestroySwapchain(sc.handle);
+  sc = Swapchain{};
+}
+
+bool DesktopXR::CreateActions()
+{
+  XrActionSetCreateInfo asci{XR_TYPE_ACTION_SET_CREATE_INFO};
+  std::strcpy(asci.actionSetName, "gameplay");
+  std::strcpy(asci.localizedActionSetName, "Gameplay");
+  asci.priority = 0;
+  if (!Check(xrCreateActionSet(m_instance, &asci, &m_actionSet), "xrCreateActionSet"))
+    return false;
+
+  xrStringToPath(m_instance, "/user/hand/right", &m_hands[0]);
+  xrStringToPath(m_instance, "/user/hand/left", &m_hands[1]);
+
+  auto make = [&](XrAction& out, XrActionType type, const char* name, const char* label, bool perHand) {
+    XrActionCreateInfo ci{XR_TYPE_ACTION_CREATE_INFO};
+    ci.actionType = type;
+    std::strcpy(ci.actionName, name);
+    std::strcpy(ci.localizedActionName, label);
+    if (perHand) {
+      ci.countSubactionPaths = 2;
+      ci.subactionPaths = m_hands;
+    }
+    return Check(xrCreateAction(m_actionSet, &ci, &out), name);
+  };
+  if (!make(m_aimPose, XR_ACTION_TYPE_POSE_INPUT, "aim", "Aim", true) ||
+      !make(m_trigger, XR_ACTION_TYPE_FLOAT_INPUT, "trigger", "Fire", true) ||
+      !make(m_grip, XR_ACTION_TYPE_FLOAT_INPUT, "grip", "Grip", true) ||
+      !make(m_a, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_a", "Start", false) ||
+      !make(m_b, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_b", "Coin", false) ||
+      !make(m_x, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_x", "Coin (left)", false) ||
+      !make(m_y, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_y", "Start (left)", false) ||
+      !make(m_menu, XR_ACTION_TYPE_BOOLEAN_INPUT, "menu", "Menu", false) ||
+      !make(m_thumbClick, XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_click", "Thumbstick click", true))
+    return false;
+
+  auto path = [&](const char* s) {
+    XrPath p = XR_NULL_PATH;
+    xrStringToPath(m_instance, s, &p);
+    return p;
+  };
+
+  // Quest Touch controllers (Virtual Desktop, Link and SteamVR all expose this profile).
+  const XrActionSuggestedBinding touch[] = {
+    {m_aimPose,    path("/user/hand/right/input/aim/pose")},
+    {m_aimPose,    path("/user/hand/left/input/aim/pose")},
+    {m_trigger,    path("/user/hand/right/input/trigger/value")},
+    {m_trigger,    path("/user/hand/left/input/trigger/value")},
+    {m_grip,       path("/user/hand/right/input/squeeze/value")},
+    {m_grip,       path("/user/hand/left/input/squeeze/value")},
+    {m_a,          path("/user/hand/right/input/a/click")},
+    {m_b,          path("/user/hand/right/input/b/click")},
+    {m_x,          path("/user/hand/left/input/x/click")},
+    {m_y,          path("/user/hand/left/input/y/click")},
+    {m_menu,       path("/user/hand/left/input/menu/click")},
+    {m_thumbClick, path("/user/hand/right/input/thumbstick/click")},
+    {m_thumbClick, path("/user/hand/left/input/thumbstick/click")},
+  };
+  XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+  suggested.interactionProfile = path("/interaction_profiles/oculus/touch_controller");
+  suggested.suggestedBindings = touch;
+  suggested.countSuggestedBindings = (uint32_t)(sizeof(touch) / sizeof(touch[0]));
+  if (!Check(xrSuggestInteractionProfileBindings(m_instance, &suggested), "suggest touch bindings"))
+    return false;
+
+  // Generic fallback for any other controller.
+  const XrActionSuggestedBinding simple[] = {
+    {m_aimPose, path("/user/hand/right/input/aim/pose")},
+    {m_aimPose, path("/user/hand/left/input/aim/pose")},
+    {m_trigger, path("/user/hand/right/input/select/click")},
+    {m_trigger, path("/user/hand/left/input/select/click")},
+    {m_a,       path("/user/hand/right/input/menu/click")},
+    {m_b,       path("/user/hand/left/input/menu/click")},
+  };
+  suggested.interactionProfile = path("/interaction_profiles/khr/simple_controller");
+  suggested.suggestedBindings = simple;
+  suggested.countSuggestedBindings = (uint32_t)(sizeof(simple) / sizeof(simple[0]));
+  xrSuggestInteractionProfileBindings(m_instance, &suggested);   // optional
+
+  for (int h = 0; h < 2; h++) {
+    XrActionSpaceCreateInfo sci{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+    sci.action = m_aimPose;
+    sci.subactionPath = m_hands[h];
+    sci.poseInActionSpace.orientation.w = 1.0f;
+    if (!Check(xrCreateActionSpace(m_session, &sci, &m_aimSpaces[h]), "xrCreateActionSpace"))
+      return false;
+  }
+
+  XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+  attach.countActionSets = 1;
+  attach.actionSets = &m_actionSet;
+  return Check(xrAttachSessionActionSets(m_session, &attach), "xrAttachSessionActionSets");
+}
+
+bool DesktopXR::CreateShaders()
+{
+  m_quadProgram = LinkProgram(kQuadVS, kQuadFS);
+  m_dotProgram = LinkProgram(kDotVS, kDotFS);
+  if (!m_quadProgram || !m_dotProgram)
+    return Fail("VR shaders failed to build");
+  m_uMvp  = glGetUniformLocation(m_quadProgram, "uMvp");
+  m_uTex  = glGetUniformLocation(m_quadProgram, "uTex");
+  m_uRect = glGetUniformLocation(m_quadProgram, "uRect");
+  m_uMode = glGetUniformLocation(m_quadProgram, "uMode");
+  m_uKeep = glGetUniformLocation(m_quadProgram, "uKeep");
+  m_uSubUv = glGetUniformLocation(m_quadProgram, "uSubUv");
+  m_uDotCenter = glGetUniformLocation(m_dotProgram, "uCenter");
+  m_uDotRadius = glGetUniformLocation(m_dotProgram, "uRadius");
+  m_uDotColor  = glGetUniformLocation(m_dotProgram, "uColor");
+  m_uDotAspect = glGetUniformLocation(m_dotProgram, "uAspect");
+  glGenVertexArrays(1, &m_vao);
+  return true;
+}
+
+void DesktopXR::Shutdown()
+{
+  m_sessionRunning = false;
+  StopWaitThread();
+  if (New3D::GetVRFrameTarget() == this)
+    New3D::SetVRFrameTarget(nullptr);
+  if (m_vao) glDeleteVertexArrays(1, &m_vao);
+  if (m_quadProgram) glDeleteProgram(m_quadProgram);
+  if (m_dotProgram) glDeleteProgram(m_dotProgram);
+  m_vao = m_quadProgram = m_dotProgram = 0;
+  for (auto& e : m_eyes)
+    DestroySwapchain(e);
+  DestroySwapchain(m_hud);
+  if (xrDestroySpace) {
+    for (auto& s : m_aimSpaces)
+      if (s != XR_NULL_HANDLE) { xrDestroySpace(s); s = XR_NULL_HANDLE; }
+    for (XrSpace* s : {&m_viewSpace, &m_localSpace, &m_stageSpace})
+      if (*s != XR_NULL_HANDLE) { xrDestroySpace(*s); *s = XR_NULL_HANDLE; }
+  }
+  if (m_actionSet != XR_NULL_HANDLE && xrDestroyActionSet) { xrDestroyActionSet(m_actionSet); m_actionSet = XR_NULL_HANDLE; }
+  if (m_session != XR_NULL_HANDLE && xrDestroySession) { xrDestroySession(m_session); m_session = XR_NULL_HANDLE; }
+  if (m_instance != XR_NULL_HANDLE && xrDestroyInstance) { xrDestroyInstance(m_instance); m_instance = XR_NULL_HANDLE; }
+  m_sessionRunning = false;
+#ifdef _WIN32
+  if (m_loaderLib) FreeLibrary((HMODULE)m_loaderLib);
+#else
+  if (m_loaderLib) dlclose(m_loaderLib);
+#endif
+  m_loaderLib = nullptr;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Session / frame loop
+// ---------------------------------------------------------------------------------------------
+
+void DesktopXR::HandleSessionState(XrSessionState state)
+{
+  switch (state) {
+    case XR_SESSION_STATE_READY: {
+      XrSessionBeginInfo bi{XR_TYPE_SESSION_BEGIN_INFO};
+      bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+      if (Check(xrBeginSession(m_session, &bi), "xrBeginSession")) {
+        m_sessionRunning = true;
+        m_recenterPending = true;
+        InfoLog("VR: session running");
+        if (m_config.threadedWait)
+          StartWaitThread();
+        if (pfnRequestDisplayRefreshRateFB && m_config.refreshHz > 0.f) {
+          XrResult r = pfnRequestDisplayRefreshRateFB(m_session, m_config.refreshHz);
+          InfoLog("VR: requested %.0f Hz -> %d", m_config.refreshHz, (int)r);
+        }
+      }
+      break;
+    }
+    case XR_SESSION_STATE_FOCUSED:
+      if (!m_focused)
+        InfoLog("VR: headset in use (focused)");
+      m_focused = true;
+      break;
+    case XR_SESSION_STATE_VISIBLE:
+    case XR_SESSION_STATE_SYNCHRONIZED:
+    case XR_SESSION_STATE_IDLE:
+      m_focused = false;
+      break;
+    case XR_SESSION_STATE_STOPPING:
+      m_focused = false;
+      m_sessionRunning = false;
+      StopWaitThread();
+      xrEndSession(m_session);
+      break;
+    case XR_SESSION_STATE_EXITING:
+    case XR_SESSION_STATE_LOSS_PENDING:
+      m_focused = false;
+      m_sessionRunning = false;
+      m_exitRequested = true;
+      break;
+    default:
+      break;
+  }
+}
+
+bool DesktopXR::PollEvents()
+{
+  XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
+  while (xrPollEvent(m_instance, &ev) == XR_SUCCESS) {
+    switch (ev.type) {
+      case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED:
+        HandleSessionState(reinterpret_cast<XrEventDataSessionStateChanged*>(&ev)->state);
+        break;
+      case XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING:
+        m_exitRequested = true;
+        break;
+      case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING:
+        m_recenterPending = true;   // the user recentred from the system menu
+        break;
+      default:
+        break;
+    }
+    ev = {XR_TYPE_EVENT_DATA_BUFFER};
+  }
+  return !m_exitRequested;
+}
+
+void DesktopXR::Recenter()
+{
+  m_recenterPending = true;
+}
+
+void DesktopXR::RecreateLocalSpace(const XrPosef& origin)
+{
+  XrReferenceSpaceCreateInfo rs{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+  rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+  rs.poseInReferenceSpace = origin;
+  XrSpace space = XR_NULL_HANDLE;
+  if (XR_SUCCEEDED(xrCreateReferenceSpace(m_session, &rs, &space))) {
+    if (m_localSpace != XR_NULL_HANDLE)
+      xrDestroySpace(m_localSpace);
+    m_localSpace = space;
+  }
+}
+
+void DesktopXR::StartWaitThread()
+{
+  if (m_waitThread.joinable())
+    return;
+  m_waitQuit = false;
+  m_waitRequested = false;
+  m_waitDone = false;
+  m_waitThread = std::thread([this] {
+    std::unique_lock<std::mutex> lock(m_waitMutex);
+    for (;;) {
+      m_waitCv.wait(lock, [&] { return m_waitQuit || (m_waitRequested && !m_waitDone); });
+      if (m_waitQuit)
+        return;
+      lock.unlock();
+      XrFrameState st{XR_TYPE_FRAME_STATE};
+      XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
+      XrResult r = m_sessionRunning ? xrWaitFrame(m_session, &wi, &st) : XR_ERROR_SESSION_NOT_RUNNING;
+      lock.lock();
+      m_waitState = st;
+      m_waitResult = r;
+      m_waitDone = true;
+      m_waitCv.notify_all();
+    }
+  });
+}
+
+void DesktopXR::StopWaitThread()
+{
+  if (!m_waitThread.joinable())
+    return;
+  {
+    std::lock_guard<std::mutex> lock(m_waitMutex);
+    m_waitQuit = true;
+  }
+  m_waitCv.notify_all();
+  m_waitThread.join();
+  m_waitQuit = false;
+  m_waitRequested = false;
+  m_waitDone = false;
+}
+
+void DesktopXR::RequestWait()
+{
+  if (!m_waitThread.joinable() || !m_sessionRunning)
+    return;
+  std::lock_guard<std::mutex> lock(m_waitMutex);
+  if (!m_waitRequested) {
+    m_waitRequested = true;
+    m_waitDone = false;
+    m_waitCv.notify_all();
+  }
+}
+
+bool DesktopXR::WaitForFrame(int maxMicroseconds)
+{
+  if (!m_waitThread.joinable() || !m_sessionRunning)
+    return true;
+  RequestWait();
+  std::unique_lock<std::mutex> lock(m_waitMutex);
+  m_waitCv.wait_for(lock, std::chrono::microseconds(maxMicroseconds), [&] { return m_waitDone || m_waitQuit || m_extEvent; });
+  m_extEvent = false;
+  return m_waitDone || m_waitQuit;
+}
+
+void DesktopXR::NotifyEvent()
+{
+  {
+    std::lock_guard<std::mutex> lock(m_waitMutex);
+    m_extEvent = true;
+  }
+  m_waitCv.notify_all();
+}
+
+bool DesktopXR::BeginFrame()
+{
+  m_frameBegun = false;
+  m_viewsValid = false;
+  m_eyeDrawn[0] = m_eyeDrawn[1] = false;
+  m_hudDrawn = false;
+  if (!m_sessionRunning)
+    return false;
+
+  m_frameState = {XR_TYPE_FRAME_STATE};
+  if (m_waitThread.joinable()) {
+    // xrWaitFrame runs on the waiter thread (OpenXR allows that), so the main thread can keep
+    // feeding the emulator while the headset paces; collect its result here.
+    RequestWait();
+    std::unique_lock<std::mutex> lock(m_waitMutex);
+    m_waitCv.wait(lock, [&] { return m_waitDone || m_waitQuit; });
+    if (m_waitQuit)
+      return false;
+    m_waitRequested = false;
+    m_waitDone = false;
+    if (!Check(m_waitResult, "xrWaitFrame"))
+      return false;
+    m_frameState = m_waitState;
+  } else {
+    XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
+    if (!Check(xrWaitFrame(m_session, &wi, &m_frameState), "xrWaitFrame"))
+      return false;
+  }
+  XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO};
+  if (XR_FAILED(xrBeginFrame(m_session, &bi)))
+    return false;
+  m_frameBegun = true;
+  if (m_frameState.predictedDisplayPeriod > 0)
+    m_displayPeriod = (double)m_frameState.predictedDisplayPeriod * 1e-9;
+  if (m_lastDisplayTime != 0 && m_frameState.predictedDisplayTime > m_lastDisplayTime)
+    m_frameDelta = std::min((double)(m_frameState.predictedDisplayTime - m_lastDisplayTime) * 1e-9, 0.1);
+  else
+    m_frameDelta = m_displayPeriod;
+  m_lastDisplayTime = m_frameState.predictedDisplayTime;
+
+  if (m_recenterPending) {
+    // New origin: the head's position, rotated only around the vertical axis (keep the
+    // floor level), so the game screen is straight ahead.
+    XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};
+    if (XR_SUCCEEDED(xrLocateSpace(m_viewSpace, m_stageSpace, m_frameState.predictedDisplayTime, &head)) &&
+        (head.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+      const XrVector3f f = Rotate(head.pose.orientation, {0.f, 0.f, -1.f});
+      const float yaw = std::atan2(-f.x, -f.z);
+      XrPosef origin;
+      origin.orientation = {0.f, std::sin(yaw * 0.5f), 0.f, std::cos(yaw * 0.5f)};
+      origin.position = (head.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ? head.pose.position : XrVector3f{0, 0, 0};
+      RecreateLocalSpace(origin);
+      m_recenterPending = false;
+      InfoLog("VR: recentred");
+    }
+  }
+
+  SyncInput();
+  if (!m_frameState.shouldRender)
+    return false;
+
+  XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};
+  li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+  li.displayTime = m_frameState.predictedDisplayTime;
+  li.space = m_localSpace;
+  XrViewState vs{XR_TYPE_VIEW_STATE};
+  uint32_t count = 0;
+  m_views[0] = {XR_TYPE_VIEW};
+  m_views[1] = {XR_TYPE_VIEW};
+  if (XR_FAILED(xrLocateViews(m_session, &li, &vs, 2, &count, m_views)) || count != 2)
+    return false;
+  m_viewsValid = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0;
+
+  XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};
+  if (XR_SUCCEEDED(xrLocateSpace(m_viewSpace, m_localSpace, m_frameState.predictedDisplayTime, &head)) &&
+      (head.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+    m_headPose = head.pose;
+
+  return m_viewsValid;
+}
+
+void DesktopXR::EndFrame()
+{
+  if (!m_frameBegun)
+    return;
+
+  for (auto& e : m_eyes)
+    ReleaseImage(e);
+  ReleaseImage(m_hud);
+
+  XrCompositionLayerProjectionView projViews[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
+                                                 {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+  XrCompositionLayerProjection proj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+  XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+  const XrCompositionLayerBaseHeader* layers[2];
+  uint32_t layerCount = 0;
+
+  if (m_frameState.shouldRender && m_viewsValid && m_eyeDrawn[0] && m_eyeDrawn[1]) {
+    for (int eye = 0; eye < 2; eye++) {
+      projViews[eye].pose = m_views[eye].pose;
+      projViews[eye].fov = m_views[eye].fov;
+      projViews[eye].subImage.swapchain = m_eyes[eye].handle;
+      projViews[eye].subImage.imageRect = {{0, 0}, {m_eyes[eye].width, m_eyes[eye].height}};
+      projViews[eye].subImage.imageArrayIndex = 0;
+    }
+    proj.space = m_localSpace;
+    proj.viewCount = 2;
+    proj.views = projViews;
+    layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&proj);
+  }
+
+  if (m_frameState.shouldRender && m_hud.releasedOnce && !m_config.hudInEye) {
+    // Exactly over the game's original screen frustum, so 2D overlays line up with the 3D world.
+    const float d = m_config.hudDistance;
+    quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    quad.space = m_localSpace;
+    quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    quad.subImage.swapchain = m_hud.handle;
+    quad.subImage.imageRect = {{0, 0}, {m_hud.width, m_hud.height}};
+    quad.pose.orientation = {0, 0, 0, 1};
+    quad.pose.position = {d * 0.5f * (m_gameL + m_gameR), d * 0.5f * (m_gameT + m_gameB), -d};
+    quad.size = {d * (m_gameR - m_gameL), d * (m_gameT - m_gameB)};
+    layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+  }
+
+  XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO};
+  ei.displayTime = m_frameState.predictedDisplayTime;
+  ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+  ei.layerCount = layerCount;
+  ei.layers = layers;
+  Check(xrEndFrame(m_session, &ei), "xrEndFrame");
+  m_frameBegun = false;
+}
+
+void DesktopXR::SetScreen(const New3D::VRScreenInfo& info)
+{
+  m_screen = info;
+  if (info.hasFrustum)
+    SetGameFrustum(info.left, info.right, info.top, info.bottom);
+
+  // VRHudLock 2: the 2D layer follows the head only while a real 3D scene is on screen (play,
+  // cutscenes: hundreds of models). Logos, the title and menus are 2D (at most a handful of
+  // models, or small preview viewports) and stay fixed in the room. Switch only after the new
+  // state has held for ~1/3 s, so short in-between screens don't flip it back and forth.
+  const bool want = info.hasFrustum && !info.subTexture && info.mainModels >= 48;
+  if (want == m_hudOnHead)
+    m_hudSwitchFrames = 0;
+  else if (++m_hudSwitchFrames >= 20) {
+    m_hudOnHead = want;
+    m_hudSwitchFrames = 0;
+    InfoLog("VR: HUD %s (%d models in the 3D view)", want ? "follows the head" : "fixed in the room", info.mainModels);
+  }
+}
+
+void DesktopXR::DrawHudInEye(const New3D::VREye& eye)
+{
+  // The game's screen as a world-locked panel at hudDistance, drawn with this eye's own view
+  // and projection - the same math as the 3D world, so crosshair and shots line up everywhere.
+  const float d = m_config.hudDistance;
+  const float n = 0.05f, f = std::max(1000.f, 4.f * d * m_config.worldUnitsPerMeter);
+  const float l = n * eye.tanLeft, r = n * eye.tanRight, t = n * eye.tanUp, b = n * eye.tanDown;
+  float proj[16] = {};
+  proj[0]  = 2 * n / (r - l);
+  proj[5]  = 2 * n / (t - b);
+  proj[8]  = (r + l) / (r - l);
+  proj[9]  = (t + b) / (t - b);
+  proj[10] = -(f + n) / (f - n);
+  proj[11] = -1;
+  proj[14] = -2 * f * n / (f - n);
+  // The panel lives in the local (room) space; the eye view converts metres with
+  // worldUnitsPerMeter, so scale the panel the same way.
+  const float s = d * m_config.worldUnitsPerMeter;
+  const float model[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1 };
+  float vm[16], mvp[16];
+  New3D::VRMul4(eye.view, model, vm);
+  New3D::VRMul4(proj, vm, mvp);
+  float panelMvp[16];   // where the 2D layers go: the room-fixed screen, or the same screen carried by the head
+  std::copy(mvp, mvp + 16, panelMvp);
+  const bool headLock = m_config.hudLock == 1 || (m_config.hudLock == 2 && m_hudOnHead);
+  if (headLock) {
+    float r[9];
+    QuatToMat3(m_headPose.orientation, r);
+    const float w = m_config.worldUnitsPerMeter;
+    const XrVector3f hp = m_config.positionalTracking ? XrVector3f{m_headPose.position.x * w, m_headPose.position.y * w, m_headPose.position.z * w}
+                                                      : XrVector3f{0.f, 0.f, 0.f};
+    const float head[16] = { r[0], r[1], r[2], 0,  r[3], r[4], r[5], 0,  r[6], r[7], r[8], 0,  hp.x, hp.y, hp.z, 1 };
+    float hm[16], hvm[16];
+    New3D::VRMul4(head, model, hm);
+    New3D::VRMul4(eye.view, hm, hvm);
+    New3D::VRMul4(proj, hvm, panelMvp);
+  }
+
+  int keepFirst = 0, keepEnd = 384;
+  if (m_hideLetterbox && m_screen.viewEndRow - m_screen.viewFirstRow <= 370) {
+    keepFirst = m_screen.viewFirstRow + 6;   // the bars reach a few rows into the 3D view
+    keepEnd = m_screen.viewEndRow - 6;
+  }
+
+  glBindFramebuffer(GL_FRAMEBUFFER, eye.fbo);
+  glDisable(GL_FRAMEBUFFER_SRGB);
+  glViewport(0, 0, eye.width, eye.height);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_STENCIL_TEST);
+  glDisable(GL_CULL_FACE);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   // premultiplied
+  glBindVertexArray(m_vao);
+  glUseProgram(m_quadProgram);
+  glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, panelMvp);
+  glUniform4f(m_uRect, m_gameL, m_gameR, m_gameT, m_gameB);
+  glActiveTexture(GL_TEXTURE0);
+  glUniform1i(m_uTex, 0);
+
+  if (m_screen.subTexture) {
+    glUniform1i(m_uMode, 2);
+    glUniform4f(m_uSubUv, m_screen.subUv[0], m_screen.subUv[1], m_screen.subUv[2], m_screen.subUv[3]);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)m_screen.subTexture);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  }
+  if (m_hudTopTex) {
+    glUniform1i(m_uMode, 1);
+    glUniform2f(m_uKeep, (float)keepFirst / 384.f, (float)keepEnd / 384.f);
+    glBindTexture(GL_TEXTURE_2D, m_hudTopTex);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  }
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  if (m_hudPointers) {
+    // pointer rings at the aim points on the panel, projected like the panel itself
+    auto project = [&](float tx, float ty, float out[2]) {
+      const float p[4] = { tx, ty, -1.f, 1.f };
+      float c[4];
+      for (int i = 0; i < 4; i++)
+        c[i] = mvp[i] * p[0] + mvp[4 + i] * p[1] + mvp[8 + i] * p[2] + mvp[12 + i] * p[3];
+      out[0] = c[0] / c[3];
+      out[1] = c[1] / c[3];
+      return c[3] > 0.f;
+    };
+    glUseProgram(m_dotProgram);
+    const float rt = 0.02f * (m_gameT - m_gameB);
+    for (int hand = 0; hand < 2; hand++) {
+      if (!m_input.aimValid[hand] || !m_input.onScreen[hand])
+        continue;
+      const float tx = m_gameL + m_input.aimX[hand] * (m_gameR - m_gameL);
+      const float ty = m_gameT - m_input.aimY[hand] * (m_gameT - m_gameB);
+      float c[2], cx[2], cy[2];
+      if (!project(tx, ty, c) || !project(tx + rt, ty, cx) || !project(tx, ty + rt, cy))
+        continue;
+      const float ry = std::fabs(cy[1] - c[1]), rx = std::fabs(cx[0] - c[0]);
+      if (ry <= 0.f || rx <= 0.f)
+        continue;
+      glUniform2f(m_uDotCenter, c[0], c[1]);
+      glUniform1f(m_uDotRadius, ry);
+      glUniform1f(m_uDotAspect, ry / rx);
+      if (hand == 0) glUniform3f(m_uDotColor, 1.f, 0.25f, 0.2f);
+      else           glUniform3f(m_uDotColor, 0.2f, 0.8f, 1.f);
+      glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+  }
+
+  glBindVertexArray(0);
+  glUseProgram(0);
+  glDisable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void DesktopXR::SetGameFrustum(float left, float right, float top, float bottom)
+{
+  if (right - left > 1e-3f && top - bottom > 1e-3f) {
+    m_gameL = left;
+    m_gameR = right;
+    m_gameT = top;
+    m_gameB = bottom;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rendering targets
+// ---------------------------------------------------------------------------------------------
+
+bool DesktopXR::AcquireImage(Swapchain& sc)
+{
+  if (sc.acquired != UINT32_MAX)
+    return true;
+  XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+  uint32_t index = 0;
+  if (XR_FAILED(xrAcquireSwapchainImage(sc.handle, &ai, &index)))
+    return false;
+  XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+  wi.timeout = XR_INFINITE_DURATION;
+  if (XR_FAILED(xrWaitSwapchainImage(sc.handle, &wi))) {
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    xrReleaseSwapchainImage(sc.handle, &ri);
+    return false;
+  }
+  sc.acquired = index;
+  return true;
+}
+
+void DesktopXR::ReleaseImage(Swapchain& sc)
+{
+  if (sc.acquired == UINT32_MAX)
+    return;
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+  xrReleaseSwapchainImage(sc.handle, &ri);
+  sc.acquired = UINT32_MAX;
+  sc.releasedOnce = true;
+}
+
+void DesktopXR::ComputeEye(int eye, New3D::VREye& out) const
+{
+  const XrView& v = m_views[eye];
+  out.tanLeft  = std::tan(v.fov.angleLeft);
+  out.tanRight = std::tan(v.fov.angleRight);
+  out.tanUp    = std::tan(v.fov.angleUp);
+  out.tanDown  = std::tan(v.fov.angleDown);
+
+  XrVector3f pos = v.pose.position;
+  if (!m_config.positionalTracking)
+    pos = {pos.x - m_headPose.position.x, pos.y - m_headPose.position.y, pos.z - m_headPose.position.z};
+  const float s = m_config.worldUnitsPerMeter;
+  pos = {pos.x * s, pos.y * s, pos.z * s};
+
+  // view = inverse(eye pose) = [R^T | -R^T * p]
+  float r[9];
+  QuatToMat3(v.pose.orientation, r);
+  float* m = out.view;
+  m[0] = r[0]; m[4] = r[1]; m[8]  = r[2];
+  m[1] = r[3]; m[5] = r[4]; m[9]  = r[5];
+  m[2] = r[6]; m[6] = r[7]; m[10] = r[8];
+  m[3] = 0;    m[7] = 0;    m[11] = 0;
+  m[12] = -(m[0] * pos.x + m[4] * pos.y + m[8]  * pos.z);
+  m[13] = -(m[1] * pos.x + m[5] * pos.y + m[9]  * pos.z);
+  m[14] = -(m[2] * pos.x + m[6] * pos.y + m[10] * pos.z);
+  m[15] = 1;
+}
+
+bool DesktopXR::BeginEye(int eye, New3D::VREye& outEye)
+{
+  if (eye < 0 || eye > 1 || m_suppressEyes || !m_frameBegun || !m_frameState.shouldRender || !m_viewsValid || m_eyeDrawn[eye])
+    return false;
+  Swapchain& sc = m_eyes[eye];
+  if (!AcquireImage(sc))
+    return false;
+
+  ComputeEye(eye, outEye);
+  outEye.fbo = sc.fbos[sc.acquired];
+  outEye.width = sc.width;
+  outEye.height = sc.height;
+  m_curEye[eye] = outEye;
+
+  glBindFramebuffer(GL_FRAMEBUFFER, outEye.fbo);
+  glDisable(GL_FRAMEBUFFER_SRGB);
+  glViewport(0, 0, sc.width, sc.height);
+  glDisable(GL_SCISSOR_TEST);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glClearColor(0.f, 0.f, 0.f, 1.f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  // Supermodel relies on a transparent clear colour: New3D clears its layer buffers with it,
+  // and an opaque one would paint over the 2D background (menus, title screens).
+  glClearColor(0.f, 0.f, 0.f, 0.f);
+
+  if (m_backdropTex)
+    DrawBackdrop(outEye);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  return true;
+}
+
+void DesktopXR::EndEye(int eye)
+{
+  if (eye < 0 || eye > 1)
+    return;
+  if (m_config.hudInEye && m_eyes[eye].acquired != UINT32_MAX)
+    DrawHudInEye(m_curEye[eye]);
+  ReleaseImage(m_eyes[eye]);
+  m_eyeDrawn[eye] = true;
+}
+
+void DesktopXR::DrawEyesIfMissing()
+{
+  const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+  for (int eye = 0; eye < 2; eye++) {
+    if (m_eyeDrawn[eye])
+      continue;
+    New3D::VREye e;
+    if (BeginEye(eye, e))
+      EndEye(eye);
+  }
+  if (scissor)
+    glEnable(GL_SCISSOR_TEST);
+}
+
+void DesktopXR::DrawBackdrop(const New3D::VREye& eye)
+{
+  // Rotation only (no translation): the backdrop sits at infinity behind the 3D world.
+  float rot[16];
+  std::memcpy(rot, eye.view, sizeof(rot));
+  rot[12] = rot[13] = rot[14] = 0.f;
+
+  const float n = 0.1f, f = 10.f;
+  const float l = n * eye.tanLeft, r = n * eye.tanRight, t = n * eye.tanUp, b = n * eye.tanDown;
+  float proj[16] = {};
+  proj[0]  = 2 * n / (r - l);
+  proj[5]  = 2 * n / (t - b);
+  proj[8]  = (r + l) / (r - l);
+  proj[9]  = (t + b) / (t - b);
+  proj[10] = -(f + n) / (f - n);
+  proj[11] = -1;
+  proj[14] = -2 * f * n / (f - n);
+  float mvp[16];
+  New3D::VRMul4(proj, rot, mvp);
+
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_BLEND);
+  glDisable(GL_CULL_FACE);
+  glDisable(GL_STENCIL_TEST);
+  glUseProgram(m_quadProgram);
+  glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, mvp);
+  glUniform4f(m_uRect, m_gameL, m_gameR, m_gameT, m_gameB);
+  glUniform1i(m_uMode, 0);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, m_backdropTex);
+  glUniform1i(m_uTex, 0);
+  glBindVertexArray(m_vao);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glBindVertexArray(0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glUseProgram(0);
+}
+
+void DesktopXR::DrawHud(GLuint topLayerTex, bool pointers, int keepFirstRow, int keepEndRow,
+                        GLuint subTex, const float* subUv)
+{
+  if (m_config.hudInEye || !m_frameBegun || !m_frameState.shouldRender || m_hudDrawn)
+    return;
+  if (!AcquireImage(m_hud))
+    return;
+
+  const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+  glBindFramebuffer(GL_FRAMEBUFFER, m_hud.fbos[m_hud.acquired]);
+  glDisable(GL_FRAMEBUFFER_SRGB);
+  glViewport(0, 0, m_hud.width, m_hud.height);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_STENCIL_TEST);
+  glDisable(GL_CULL_FACE);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glClearColor(0.f, 0.f, 0.f, 0.f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glBindVertexArray(m_vao);
+
+  static const float identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   // everything here is premultiplied
+
+  if (subTex && subUv) {
+    // small 3D viewports (menus), flat on the screen panel, under the 2D top layer
+    glUseProgram(m_quadProgram);
+    glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, identity);
+    glUniform4f(m_uRect, -1.f, 1.f, 1.f, -1.f);
+    glUniform1i(m_uMode, 2);
+    glUniform4f(m_uSubUv, subUv[0], subUv[1], subUv[2], subUv[3]);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, subTex);
+    glUniform1i(m_uTex, 0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+  }
+
+  if (topLayerTex) {
+    glUseProgram(m_quadProgram);
+    glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, identity);
+    glUniform4f(m_uRect, -1.f, 1.f, 1.f, -1.f);
+    glUniform1i(m_uMode, 1);
+    glUniform2f(m_uKeep, (float)keepFirstRow / 384.f, (float)keepEndRow / 384.f);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, topLayerTex);
+    glUniform1i(m_uTex, 0);
+    // The game's (z = -1) quad through an identity transform lands on the near plane.
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+  }
+
+  if (pointers) {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   // premultiplied
+    glUseProgram(m_dotProgram);
+    glUniform1f(m_uDotAspect, (float)m_hud.width / (float)m_hud.height);
+    glUniform1f(m_uDotRadius, 0.03f);
+    for (int hand = 0; hand < 2; hand++) {
+      if (!m_input.aimValid[hand] || !m_input.onScreen[hand])
+        continue;
+      glUniform2f(m_uDotCenter, m_input.aimX[hand] * 2.f - 1.f, 1.f - m_input.aimY[hand] * 2.f);
+      if (hand == 0) glUniform3f(m_uDotColor, 1.f, 0.25f, 0.2f);
+      else           glUniform3f(m_uDotColor, 0.2f, 0.8f, 1.f);
+      glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    glDisable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  }
+
+  glBindVertexArray(0);
+  glUseProgram(0);
+  ReleaseImage(m_hud);
+  m_hudDrawn = true;
+  if (scissor)
+    glEnable(GL_SCISSOR_TEST);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------------------------
+
+void DesktopXR::SyncInput()
+{
+  XrActiveActionSet active{m_actionSet, XR_NULL_PATH};
+  XrActionsSyncInfo si{XR_TYPE_ACTIONS_SYNC_INFO};
+  si.countActiveActionSets = 1;
+  si.activeActionSets = &active;
+  if (xrSyncActions(m_session, &si) != XR_SUCCESS) {
+    m_input = DesktopXRInput{};   // not focused (system menu open, etc.)
+    return;
+  }
+
+  auto getBool = [&](XrAction a, XrPath sub) {
+    XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+    gi.action = a;
+    gi.subactionPath = sub;
+    XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
+    return XR_SUCCEEDED(xrGetActionStateBoolean(m_session, &gi, &st)) && st.isActive && st.currentState;
+  };
+  auto getFloat = [&](XrAction a, XrPath sub) {
+    XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+    gi.action = a;
+    gi.subactionPath = sub;
+    XrActionStateFloat st{XR_TYPE_ACTION_STATE_FLOAT};
+    return (XR_SUCCEEDED(xrGetActionStateFloat(m_session, &gi, &st)) && st.isActive) ? st.currentState : 0.f;
+  };
+
+  DesktopXRInput in;
+  in.buttonA = getBool(m_a, XR_NULL_PATH);
+  in.buttonB = getBool(m_b, XR_NULL_PATH);
+  in.buttonX = getBool(m_x, XR_NULL_PATH);
+  in.buttonY = getBool(m_y, XR_NULL_PATH);
+  in.menu    = getBool(m_menu, XR_NULL_PATH);
+
+  const float d = m_config.hudDistance;
+  for (int h = 0; h < 2; h++) {
+    in.trigger[h]    = getFloat(m_trigger, m_hands[h]) > 0.5f;
+    in.grip[h]       = getFloat(m_grip, m_hands[h]) > 0.5f;
+    in.thumbClick[h] = getBool(m_thumbClick, m_hands[h]);
+
+    // Aim ray -> game screen: intersect with the HUD plane (z = -d) and normalise against
+    // the game's frustum at that distance. Matches where the HUD is drawn.
+    XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+    if (XR_FAILED(xrLocateSpace(m_aimSpaces[h], m_localSpace, m_frameState.predictedDisplayTime, &loc)))
+      continue;
+    const XrSpaceLocationFlags need = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+    if ((loc.locationFlags & need) != need)
+      continue;
+    const XrVector3f o = loc.pose.position;
+    const XrVector3f dir = Rotate(loc.pose.orientation, {0.f, 0.f, -1.f});
+    if (dir.z > -1e-4f)
+      continue;
+    const float t = (-d - o.z) / dir.z;
+    if (t <= 0.f)
+      continue;
+    const float px = (o.x + t * dir.x) / d;
+    const float py = (o.y + t * dir.y) / d;
+    const float nx = (px - m_gameL) / (m_gameR - m_gameL);
+    const float ny = (m_gameT - py) / (m_gameT - m_gameB);
+    in.aimValid[h] = true;
+    in.onScreen[h] = nx >= 0.f && nx <= 1.f && ny >= 0.f && ny <= 1.f;
+    // Not clamped: with the wide gun calibration the game aims (and draws its crosshair)
+    // beyond the original screen, so the whole view in the headset can be shot at.
+    in.aimX[h] = nx;
+    in.aimY[h] = ny;
+  }
+  m_input = in;
+}
