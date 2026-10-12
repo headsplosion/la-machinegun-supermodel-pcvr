@@ -64,9 +64,34 @@ jobs:
           name: SupermodelVR-windows
           path: pkg/SupermodelVR-windows.zip
 
-      - name: Publish release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      # The release is published by this workflow itself: the version comes from the VERSION
+      # file (or from the tag when a v* tag is pushed). Each push to main refreshes the zip on
+      # the release for the current version; bump VERSION to start a new release.
+      - name: Release version
+        id: ver
+        if: github.event_name == 'push'
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(tr -d ' \r\n' < VERSION)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: L.A. Machineguns PC VR ${{ steps.ver.outputs.tag }}
           files: pkg/SupermodelVR-windows.zip
-          generate_release_notes: true
+          make_latest: true
+          body: |
+            Windows build of Supermodel with the OpenXR VR mode, set up for L.A. Machineguns.
+
+            **Download** `SupermodelVR-windows.zip` below, unzip it, put your own `lamachin.zip`
+            ROM set in the `ROMs` folder, connect the headset (Virtual Desktop / Quest Link /
+            SteamVR as the active OpenXR runtime) and run `Play LA Machineguns VR.bat`.
+            Full instructions are in `README-VR.txt` inside the zip and in the README.
+
+            No ROMs or other game files are included.
