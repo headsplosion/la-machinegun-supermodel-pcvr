@@ -1,5 +1,7 @@
 # L.A. Machineguns PC VR — Supermodel with OpenXR
 
+<p align="center"><img src="Docs/Images/title-screen.png" width="620" alt="L.A. Machineguns title screen running in Supermodel" /></p>
+
 Play Sega's 1998 light-gun arcade game **L.A. Machineguns: Rage of the Machines** in VR. This is a fork of the [Supermodel](https://github.com/trzy/Supermodel) Sega Model 3 emulator with an OpenXR mode. Your PC runs the emulator and streams it to the headset.
 
 - **Stereo 3D:** the game's 3D world is drawn in stereo around you, with head tracking.
