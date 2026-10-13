@@ -29,6 +29,7 @@
 #define INCLUDED_NEW3D_H
 
 #include <unordered_map>
+#include <array>
 #include <atomic>
 #include <GL/glew.h>
 #include "Types.h"
@@ -241,7 +242,9 @@ private:
 	static float LosValue(const float range[2]);
 	void BuildScene(void);											// scene graph -> nodes + VBO upload
 	void DrawScene(R3DFrameBuffers& fb, bool processLos, GLuint target);	// nodes -> target (0 = default FB)
-	void DrawEyes(void);											// VR: DrawScene once per eye
+	void DrawEyes(bool newFrame = true);							// VR: DrawScene once per eye (or once, flat, in cinema mode)
+	void DrawVRFlat(IVRFrameTarget* vr);
+	void MeasureCameraTurn();										// VR: game camera rotation since last frame
 	void DrawVRSubViewports(void);									// VR: small viewports -> flat texture
 	bool PassVRFilter(const Viewport& vp) const;
 	void CalcViewport(Viewport* vp);
@@ -321,6 +324,8 @@ private:
 	int				m_vrFbHeight = 0;
 	const VREye*	m_vrEye = nullptr;		// eye being drawn, nullptr = flat
 	bool			m_vrSceneValid = false;	// nodes/VBO hold a drawable frame
+	float			m_vrCamTurn = 0.0f;			// degrees since the previous game frame
+	std::unordered_map<const void*, std::array<float, 9>> m_vrPrevRot;	// static models' rotation last frame
 	enum class VPFilter { all, mainOnly, subOnly };
 	VPFilter		m_vpFilter = VPFilter::all;
 	GLuint			m_vrSubFbo = 0, m_vrSubTex = 0;

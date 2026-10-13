@@ -21,7 +21,8 @@ Playing
        Trigger (either hand) ... fire; the hand you fire with is the gun
        A or Y .................. Start
        B or X .................. Coin
-       Right stick click ....... re-centre the view (game screen straight ahead)
+       Left menu button ........ options menu (the game pauses; point and pull the trigger)
+       Either stick click ...... re-centre the view (game screen straight ahead)
        Left grip + left stick click ... Test (operator menu) - not needed to play
      The game's own crosshair follows the controller, exactly like the mouse / Steam
      Deck touchpad does, and it is not limited to the original 4:3 screen: you can aim and
@@ -40,6 +41,21 @@ Virtual Desktop settings for smooth play
   Streaming tab: Frame rate 72 (or 90 if it holds), Synchronous Spacewarp: Disabled.
   With Spacewarp on, Virtual Desktop halves the game to 36 fps whenever a frame is late,
   which looks choppy and makes the crosshair lag.
+
+Options menu (left controller's menu button)
+  Comfort  Vignette - darkens the edges of your view while the game's camera turns fast
+                      (Off / Light / Medium / Strong); the best help against motion sickness.
+           Cinema mode - the game on a big screen in a dark room: no camera motion around you
+                      at all (and no 3D depth). Small / Medium / Large screen.
+  Gun      Gun hand - Either (the hand that last fired) / Right / Left.
+           Recoil vibration - Off / Light / Strong.
+           Aim fine-tune - nudge the aim left/right and up/down in 0.1 degree steps, if the
+                      crosshair sits a little off from where you point.
+  Screen   Score / timer / text - Fixed in the room / Follow head / Auto (head during play).
+           2D graphics scaling - Soft / Sharp / Smooth edges (pixel-art upscaling).
+           Hide player 2 PRESS START, hit static over the whole view.
+           Render resolution - 0.5x to 1.5x of the headset's own; applies on the next start.
+  Changes are saved to Config/Supermodel.ini straight away.
 
 Settings (Config/Supermodel.ini, [ Global ])
   VRResolutionScale     1.0 = headset's recommended eye size; raise for sharper image
@@ -62,6 +78,12 @@ Settings (Config/Supermodel.ini, [ Global ])
                         during play (it keeps flashing in single-player games)
   VRStaticFill          1 = when you're hit, the game's flickering "static" fills your whole
                         view instead of only the original 4:3 screen
+  VRVignette            0-3 comfort vignette (see the options menu)
+  VRCinema, VRCinemaSize  cinema mode on/off, screen size 0-2
+  VRGunHand             0 = either, 1 = right, 2 = left
+  VRRecoil              0 = off, 1 = light, 2 = strong
+  VRAimNudgeX/Y         aim fine-tune in degrees
+  VRHudFilter           0 = soft, 1 = sharp, 2 = smooth edges
   VRHudLayer            0 = draw score/crosshair into the 3D image (exact alignment);
                         1 = use a separate compositor layer (sharper text, may drift)
   VRGunCalibration      1 = set the wide gun calibration in the game (see below)

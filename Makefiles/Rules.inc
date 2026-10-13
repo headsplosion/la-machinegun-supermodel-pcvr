@@ -121,6 +121,7 @@ SRC_FILES = \
 	Src/CPU/PowerPC/ppc.cpp \
 	Src/OSD/SDL/Main.cpp \
 	Src/OSD/VR/DesktopXR.cpp \
+	Src/OSD/VR/VRMenu.cpp \
 	Src/OSD/SDL/Audio.cpp \
 	Src/OSD/SDL/Thread.cpp \
 	Src/OSD/SDL/Gui.cpp \

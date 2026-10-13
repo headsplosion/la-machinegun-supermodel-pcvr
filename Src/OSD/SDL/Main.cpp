@@ -107,6 +107,7 @@
 #include "OSD/ConfigFile.h"
 #include "Gui.h"
 #include "OSD/VR/DesktopXR.h"
+#include "OSD/VR/VRMenu.h"
 #include "OSD/VR/VRInput.h"
 
 
@@ -851,12 +852,123 @@ static void PrintGLError(GLenum error)
 
 VRVirtualInput g_vrInput;
 
-static int  s_vrGunHand = 0;                 // hand whose aim drives the gun (last to fire)
+static int  s_vrGunHand = 0;                 // hand whose aim drives the gun (last to fire, or fixed)
 static bool s_vrPrevTrigger[2] = { false, false };
 static bool s_vrPrevRecenter = false;
 static DesktopXR *s_vrXrForHook = nullptr;   // woken by the emulator thread (see g_vrFrameDoneHook)
 static float s_vrAimScaleX = 1.0f, s_vrAimOffsetX = 0.0f;   // gun value = aim * scale + offset
 static float s_vrAimScaleY = 1.0f, s_vrAimOffsetY = 0.0f;
+
+// Options menu (left controller's menu button) and the settings it changes.
+static VRSettings s_vrSettings;
+static VRMenu     s_vrMenu;
+static bool       s_vrMenuOpen = false;
+static bool       s_vrMenuPaused = false;      // the menu paused the game (not the user)
+static bool       s_vrPrevMenuButton = false;
+static bool       s_vrHoldTrigger = false;     // after closing the menu: ignore the trigger until released
+static uint64_t   s_vrMenuTicks = 0;
+static double     s_vrRecoilTimer = 0.0;
+
+static void VRReadSettings()
+{
+  VRSettings &v = s_vrSettings;
+  v.gunHand     = std::clamp(s_runtime_config["VRGunHand"].ValueAsDefault<int>(v.gunHand), 0, 2);
+  v.vignette    = std::clamp(s_runtime_config["VRVignette"].ValueAsDefault<int>(v.vignette), 0, 3);
+  v.cinema      = s_runtime_config["VRCinema"].ValueAsDefault<bool>(v.cinema);
+  v.cinemaSize  = std::clamp(s_runtime_config["VRCinemaSize"].ValueAsDefault<int>(v.cinemaSize), 0, 2);
+  v.hudLock     = std::clamp(s_runtime_config["VRHudLock"].ValueAsDefault<int>(v.hudLock), 0, 2);
+  v.hideP2      = s_runtime_config["VRHideP2Prompt"].ValueAsDefault<bool>(v.hideP2);
+  v.staticFill  = s_runtime_config["VRStaticFill"].ValueAsDefault<bool>(v.staticFill);
+  v.recoil      = std::clamp(s_runtime_config["VRRecoil"].ValueAsDefault<int>(v.recoil), 0, 2);
+  v.aimNudgeX   = std::clamp(s_runtime_config["VRAimNudgeX"].ValueAsDefault<float>(v.aimNudgeX), -3.0f, 3.0f);
+  v.aimNudgeY   = std::clamp(s_runtime_config["VRAimNudgeY"].ValueAsDefault<float>(v.aimNudgeY), -3.0f, 3.0f);
+  v.renderScale = std::clamp(s_runtime_config["VRResolutionScale"].ValueAsDefault<float>(v.renderScale), 0.5f, 1.5f);
+  v.hudFilter   = std::clamp(s_runtime_config["VRHudFilter"].ValueAsDefault<int>(v.hudFilter), 0, 2);
+}
+
+// The options the VR layer uses at run time.
+static void VRApplySettings(DesktopXR &xr)
+{
+  DesktopXR::Config &c = xr.Settings();
+  c.vignette     = s_vrSettings.vignette;
+  c.cinema       = s_vrSettings.cinema;
+  c.cinemaSize   = s_vrSettings.cinemaSize;
+  c.hudLock      = s_vrSettings.hudLock;
+  c.hideP2Prompt = s_vrSettings.hideP2;
+  c.staticFill   = s_vrSettings.staticFill;
+  c.aimNudgeX    = s_vrSettings.aimNudgeX;
+  c.aimNudgeY    = s_vrSettings.aimNudgeY;
+  c.hudFilter    = s_vrSettings.hudFilter;
+}
+
+// Writes the menu's options into Supermodel.ini: existing "Key = value" lines are replaced,
+// missing keys are added after "[ Global ]". Everything else in the file is kept as it is.
+static void VRSaveSettings()
+{
+  const VRSettings &v = s_vrSettings;
+  char buf[32];
+  auto f = [&](float x) { std::snprintf(buf, sizeof(buf), "%.2f", x); return std::string(buf); };
+  const std::vector<std::pair<std::string, std::string>> values = {
+    { "VRGunHand", std::to_string(v.gunHand) },     { "VRVignette", std::to_string(v.vignette) },
+    { "VRCinema", v.cinema ? "1" : "0" },           { "VRCinemaSize", std::to_string(v.cinemaSize) },
+    { "VRHudLock", std::to_string(v.hudLock) },     { "VRHideP2Prompt", v.hideP2 ? "1" : "0" },
+    { "VRStaticFill", v.staticFill ? "1" : "0" },   { "VRRecoil", std::to_string(v.recoil) },
+    { "VRAimNudgeX", f(v.aimNudgeX) },              { "VRAimNudgeY", f(v.aimNudgeY) },
+    { "VRResolutionScale", f(v.renderScale) },      { "VRHudFilter", std::to_string(v.hudFilter) },
+  };
+
+  std::vector<std::string> lines;
+  if (FILE *in = fopen(s_configFilePath.c_str(), "r"))
+  {
+    char line[1024];
+    while (fgets(line, sizeof(line), in))
+    {
+      std::string l(line);
+      while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
+        l.pop_back();
+      lines.push_back(l);
+    }
+    fclose(in);
+  }
+  auto keyOf = [](const std::string &l) {
+    const size_t eq = l.find('=');
+    if (eq == std::string::npos || l.empty() || l[0] == ';' || l[0] == '[')
+      return std::string();
+    std::string k = l.substr(0, eq);
+    k.erase(0, k.find_first_not_of(" \t"));
+    k.erase(k.find_last_not_of(" \t") + 1);
+    return k;
+  };
+  std::vector<bool> found(values.size(), false);
+  for (auto &l : lines)
+  {
+    const std::string k = keyOf(l);
+    for (size_t i = 0; i < values.size(); i++)
+      if (!k.empty() && Util::ToLower(k) == Util::ToLower(values[i].first))
+      {
+        l = values[i].first + " = " + values[i].second;
+        found[i] = true;
+      }
+  }
+  size_t insertAt = 0;
+  for (size_t i = 0; i < lines.size(); i++)
+    if (lines[i].find('[') != std::string::npos && Util::ToLower(lines[i]).find("global") != std::string::npos)
+    {
+      insertAt = i + 1;
+      break;
+    }
+  for (size_t i = values.size(); i-- > 0;)
+    if (!found[i])
+      lines.insert(lines.begin() + (std::ptrdiff_t)insertAt, values[i].first + " = " + values[i].second);
+  if (FILE *out = fopen(s_configFilePath.c_str(), "w"))
+  {
+    for (const auto &l : lines)
+      fprintf(out, "%s\n", l.c_str());
+    fclose(out);
+  }
+  else
+    ErrorLog("VR: could not save the options to %s", s_configFilePath.c_str());
+}
 
 // Controllers -> the virtual mouse/keyboard the SDL input system reads (see VRInput.h).
 // GPU time per headset frame (GL timer query, read back a few frames later, never blocking).
@@ -951,6 +1063,10 @@ static void ApplyVRInput(DesktopXR &xr)
       s_vrGunHand = h;
     s_vrPrevTrigger[h] = in.trigger[h];
   }
+  if (s_vrSettings.gunHand == 1)
+    s_vrGunHand = 0;          // right
+  else if (s_vrSettings.gunHand == 2)
+    s_vrGunHand = 1;          // left
   int h = s_vrGunHand;
   if (!in.aimValid[h] && in.aimValid[1 - h])
     h = 1 - h;
@@ -962,16 +1078,20 @@ static void ApplyVRInput(DesktopXR &xr)
     g_vrInput.x = std::clamp(in.aimX[h] * s_vrAimScaleX + s_vrAimOffsetX, 0.0f, 1.0f);
     g_vrInput.y = std::clamp(in.aimY[h] * s_vrAimScaleY + s_vrAimOffsetY, 0.0f, 1.0f);
   }
-  g_vrInput.mouseLeft   = in.trigger[0] || in.trigger[1];
+  const bool anyTrigger = s_vrSettings.gunHand == 0 ? (in.trigger[0] || in.trigger[1]) : in.trigger[h];
+  if (!anyTrigger)
+    s_vrHoldTrigger = false;
+  g_vrInput.mouseLeft   = anyTrigger && !s_vrHoldTrigger && !s_vrMenuOpen;
   g_vrInput.mouseRight  = in.grip[h];
   g_vrInput.mouseMiddle = false;
-  g_vrInput.start1  = in.buttonA || in.buttonY;
-  g_vrInput.coin1   = in.buttonB || in.buttonX;
-  g_vrInput.test    = in.grip[1] && in.thumbClick[1];   // left grip + left stick click
+  g_vrInput.start1  = (in.buttonA || in.buttonY) && !s_vrMenuOpen;
+  g_vrInput.coin1   = (in.buttonB || in.buttonX) && !s_vrMenuOpen;
+  g_vrInput.test    = in.grip[1] && in.thumbClick[1] && !s_vrMenuOpen;   // left grip + left stick click
   g_vrInput.service = false;
 
-  // Right stick click: re-centre the view (game screen straight ahead).
-  const bool recenter = in.thumbClick[0];
+  // Either stick click: re-centre the view (game screen straight ahead). Not with the left
+  // grip held - that is the operator menu.
+  const bool recenter = in.thumbClick[0] || (in.thumbClick[1] && !in.grip[1]);
   if (recenter && !s_vrPrevRecenter)
     xr.Recenter();
   s_vrPrevRecenter = recenter;
@@ -1223,6 +1343,17 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       vc.hudLock            = s_runtime_config["VRHudLock"].ValueAsDefault<int>(vc.hudLock);
       vc.hideP2Prompt       = s_runtime_config["VRHideP2Prompt"].ValueAsDefault<bool>(vc.hideP2Prompt);
       vc.staticFill         = s_runtime_config["VRStaticFill"].ValueAsDefault<bool>(vc.staticFill);
+      VRReadSettings();
+      vc.resolutionScale    = s_vrSettings.renderScale;
+      vc.vignette           = s_vrSettings.vignette;
+      vc.cinema             = s_vrSettings.cinema;
+      vc.cinemaSize         = s_vrSettings.cinemaSize;
+      vc.hudLock            = s_vrSettings.hudLock;
+      vc.hideP2Prompt       = s_vrSettings.hideP2;
+      vc.staticFill         = s_vrSettings.staticFill;
+      vc.aimNudgeX          = s_vrSettings.aimNudgeX;
+      vc.aimNudgeY          = s_vrSettings.aimNudgeY;
+      vc.hudFilter          = s_vrSettings.hudFilter;
       xr = std::make_unique<DesktopXR>();
       if (!xr->Init(vc))
       {
@@ -1230,6 +1361,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         VRFinishFrame(vrModel3, vrInFlight);
   g_vrFrameDoneHook = nullptr;
   s_vrXrForHook = nullptr;
+  s_vrMenu.Shutdown();
   xr.reset();
       }
     }
@@ -1260,6 +1392,9 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         g_vrFrameDoneHook = [] { if (s_vrXrForHook) s_vrXrForHook->NotifyEvent(); };
       }
       InfoLog("VR: started on '%s'", xr->RuntimeName().c_str());
+      VRApplySettings(*xr);
+      if (!s_vrMenu.Init())
+        InfoLog("VR: options menu unavailable");
     }
     else
     {
@@ -1374,6 +1509,79 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         }
       }
       ApplyVRInput(*xr);
+
+      // Options menu: left controller's menu button opens/closes it; the game pauses meanwhile.
+      {
+        const DesktopXRInput &vin = xr->Input();
+        const bool menuButton = vin.menu;
+        bool toggle = menuButton && !s_vrPrevMenuButton;
+        s_vrPrevMenuButton = menuButton;
+        VRMenuResult mr;
+        if (s_vrMenuOpen)
+        {
+          // pointer: the gun hand if it points at the panel, else the other hand
+          int ph = vin.menuHit[s_vrGunHand] ? s_vrGunHand : (vin.menuHit[1 - s_vrGunHand] ? 1 - s_vrGunHand : -1);
+          const uint64_t now = SDL_GetPerformanceCounter();
+          const double dt = s_vrMenuTicks ? (double)(now - s_vrMenuTicks) / (double)s_perfCounterFrequency : 1.0 / 72.0;
+          s_vrMenuTicks = now;
+          mr = s_vrMenu.Render(s_vrSettings, ph >= 0 ? vin.menuU[ph] : 0.f, ph >= 0 ? vin.menuV[ph] : 0.f, ph >= 0,
+                               ph >= 0 && vin.trigger[ph], dt);
+          if (mr.changed)
+          {
+            VRApplySettings(*xr);
+            VRSaveSettings();
+          }
+          if (mr.recenter)
+            xr->Recenter();
+          if (mr.quit)
+            quit = true;
+          if (mr.resume)
+            toggle = true;
+        }
+        if (toggle && !quit)
+        {
+          s_vrMenuOpen = !s_vrMenuOpen;
+          if (s_vrMenuOpen)
+          {
+            s_vrMenuTicks = 0;
+            if (!paused)
+            {
+              VRFinishFrame(vrModel3, vrInFlight);
+              Model3->PauseThreads();
+              SetAudioEnabled(false);
+              paused = true;
+              s_vrMenuPaused = true;
+            }
+            s_vrMenu.Render(s_vrSettings, 0.f, 0.f, false, false, 0.0);   // first image before it shows
+          }
+          else
+          {
+            s_vrHoldTrigger = true;   // the click that closed the menu must not fire
+            if (s_vrMenuPaused)
+            {
+              Model3->ResumeThreads();
+              SetAudioEnabled(true);
+              paused = false;
+              s_vrMenuPaused = false;
+            }
+          }
+          InfoLog("VR: options menu %s", s_vrMenuOpen ? "open" : "closed");
+        }
+        xr->SetMenu(s_vrMenu.Texture(), s_vrMenuOpen);
+      }
+
+      // Recoil: short pulses on the gun hand while firing.
+      if (s_vrSettings.recoil > 0 && g_vrInput.mouseLeft && !paused)
+      {
+        s_vrRecoilTimer -= xr->FrameDeltaSeconds();
+        if (s_vrRecoilTimer <= 0.0)
+        {
+          xr->Haptic(s_vrGunHand, s_vrSettings.recoil == 1 ? 0.35f : 0.8f, 0.035f);
+          s_vrRecoilTimer = 1.0 / 12.0;   // about the game's rate of fire
+        }
+      }
+      else
+        s_vrRecoilTimer = 0.0;
       if (vrQuickBootPending && !paused && vrStarted && vrModel3 && vrModel3->GetTimings().frameId > 4000 &&
           (g_vrInput.coin1 || g_vrInput.start1))
       {

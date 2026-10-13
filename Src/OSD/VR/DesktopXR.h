@@ -44,6 +44,13 @@ struct DesktopXRInput
   bool thumbClick[2] = {false, false};
   bool buttonA = false, buttonB = false, buttonX = false, buttonY = false;
   bool menu = false;
+
+  // Controller rays (local space, metres) and where they hit the options menu (0..1, y down).
+  bool       rayValid[2] = {false, false};
+  XrVector3f rayOrigin[2] = {{0, 0, 0}, {0, 0, 0}};
+  XrVector3f rayDir[2] = {{0, 0, -1}, {0, 0, -1}};
+  bool  menuHit[2] = {false, false};
+  float menuU[2] = {0, 0}, menuV[2] = {0, 0}, menuDist[2] = {0, 0};
 };
 
 class DesktopXR final : public New3D::IVRFrameTarget
@@ -66,6 +73,12 @@ public:
                                        // game shows 3D (play, cutscenes), fixed for 2D menus
     bool  hideP2Prompt       = true;   // leave out player 2's "PRESS START BUTTON" during play
     bool  staticFill         = true;   // extend the game's hit "static" over the whole view
+    int   vignette           = 2;      // comfort vignette during fast camera turns, 0 off .. 3 strong
+    int   hudFilter          = 1;      // 2D layer scaling: 0 soft, 1 sharp, 2 smooth edges
+    float aimNudgeX          = 0.f;    // aim fine-tune, degrees
+    float aimNudgeY          = 0.f;
+    bool  cinema             = false;  // cinema mode: the flat game on a big screen
+    int   cinemaSize         = 1;      // 0 small, 1 medium, 2 large
   };
 
   ~DesktopXR();
@@ -74,6 +87,13 @@ public:
   bool Init(const Config& config);
   void Shutdown();
   const std::string& LastError() const { return m_error; }
+  Config& Settings() { return m_config; }   // options the menu can change at run time
+
+  // Options menu: texture from VRMenu, shown as a panel in front of the head while open.
+  void SetMenu(GLuint tex, bool open);
+  bool MenuOpen() const { return m_menuOpen; }
+  // Controller vibration on one hand (0 = right), amplitude 0..1.
+  void Haptic(int hand, float amplitude, float seconds);
   std::string RuntimeName() const { return m_runtimeName; }
 
   bool PollEvents();          // false = the runtime asked us to quit
@@ -118,6 +138,9 @@ public:
   void  EndEye(int eye) override;
   float CullTangent() const override { return 100.f; }
   void  SetScreen(const New3D::VRScreenInfo& info) override;
+  bool  BeginFlat(New3D::VREye& outTarget) override;
+  void  EndFlat() override;
+  bool  WantsFlat() const override { return m_config.cinema; }
 
   // 2D top layer texture (496x384, rows top-first) and HUD options, for the in-eye HUD.
   void SetHudSource(GLuint topLayerTex, bool pointers, bool hideLetterbox)
@@ -157,6 +180,12 @@ private:
   void DrawBackdrop(const New3D::VREye& eye);
   void DrawHudInEye(const New3D::VREye& eye);
   void DrawStaticFill(const New3D::VREye& eye, const float panelMvp[16]);
+  void DrawMenuInEye(const New3D::VREye& eye);
+  void DrawVignette(const New3D::VREye& eye);
+  void DrawCinemaInEye(const New3D::VREye& eye);
+  void UpdateComfort();
+  float CinemaScale() const;
+  void EyeProjection(const New3D::VREye& eye, float proj[16]) const;
   void HandleSessionState(XrSessionState state);
   void RecreateLocalSpace(const XrPosef& origin);
   void StartWaitThread();
@@ -209,7 +238,7 @@ private:
   XrActionSet m_actionSet = XR_NULL_HANDLE;
   XrAction m_aimPose = XR_NULL_HANDLE, m_trigger = XR_NULL_HANDLE, m_grip = XR_NULL_HANDLE;
   XrAction m_a = XR_NULL_HANDLE, m_b = XR_NULL_HANDLE, m_x = XR_NULL_HANDLE, m_y = XR_NULL_HANDLE;
-  XrAction m_menu = XR_NULL_HANDLE, m_thumbClick = XR_NULL_HANDLE;
+  XrAction m_menu = XR_NULL_HANDLE, m_thumbClick = XR_NULL_HANDLE, m_haptic = XR_NULL_HANDLE;
   XrPath   m_hands[2] = {XR_NULL_PATH, XR_NULL_PATH};  // 0 = right, 1 = left
   XrSpace  m_aimSpaces[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
   DesktopXRInput m_input;
@@ -232,6 +261,23 @@ private:
   GLuint m_staticDetectProgram = 0, m_staticProgram = 0, m_staticTex = 0, m_staticFbo = 0;
   GLint  m_uStaticMvp = -1, m_uStaticRect = -1, m_uStaticGame = -1, m_uStaticAmount = -1, m_uStaticSeed = -1;
   XrTime m_staticMeasuredFrame = 0;
+  GLint  m_uFilter = -1;
+  GLuint m_vignetteProgram = 0;
+  GLint  m_uVigTan = -1, m_uVigSize = -1, m_uVigRadius = -1, m_uVigSoft = -1;
+  float  m_cameraTurn = 0.f;   // game camera turn per game frame (degrees)
+  float  m_vignette = 0.f;     // current vignette amount 0..1
+  static constexpr int   kCinemaW = 1488, kCinemaH = 1152;
+  static constexpr float kCinemaDistance = 4.0f;   // metres
+  GLuint m_cinemaTex = 0, m_cinemaFbo = 0;
+  bool   m_cinemaValid = false;
+  GLuint m_lineProgram = 0;
+  GLint  m_uLineMvp = -1, m_uLineA = -1, m_uLineB = -1, m_uLineColor = -1;
+
+  static constexpr float kMenuWidth = 1.20f, kMenuHeight = 0.90f, kMenuDistance = 1.4f;   // metres
+  bool       m_menuOpen = false;
+  GLuint     m_menuTex = 0;
+  float      m_menuYaw = 0.f;
+  XrVector3f m_menuCenter{0.f, 0.f, -kMenuDistance};
 };
 
 #endif

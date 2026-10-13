@@ -44,6 +44,7 @@ struct VRScreenInfo
 	int			viewFirstRow = 0, viewEndRow = 384;	// rows covered by the main 3D view (letterbox)
 	unsigned	subTexture = 0;						// small viewports drawn flat (0 = none)
 	float		subUv[4] = { 0, 0, 1, 1 };			// game area in that texture (u0, v0, u1, v1)
+	float		cameraTurn = 0;						// game camera rotation since the last game frame (degrees)
 };
 
 class IVRFrameTarget
@@ -61,6 +62,12 @@ public:
 
 	// Called once per drawn game frame, before the eyes.
 	virtual void SetScreen(const VRScreenInfo& info) { (void)info; }
+
+	// Cinema mode: return true and a render target to get the game drawn flat (as on a monitor)
+	// into it instead of once per eye; the eyes are then composed by the target itself.
+	virtual bool BeginFlat(VREye& outTarget) { (void)outTarget; return false; }
+	virtual void EndFlat() {}
+	virtual bool WantsFlat() const { return false; }
 
 	// Half-angle tangent used to widen renderer-side culling while VR is active.
 	virtual float CullTangent() const { return 2.5f; }

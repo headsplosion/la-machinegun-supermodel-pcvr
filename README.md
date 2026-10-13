@@ -25,7 +25,8 @@ Developed and tested on a Meta Quest 3 streamed with **Virtual Desktop** (VDXR r
 | Trigger (either hand) | Fire. The hand you fire with becomes the gun. |
 | A or Y | Start |
 | B or X | Coin |
-| Right stick click | Re-centre the view |
+| Left menu button | Options menu (comfort, gun, screen) |
+| Either stick click | Re-centre the view |
 | Left grip + left stick click | Operator (test) menu |
 | Esc (PC keyboard) | Quit |
 

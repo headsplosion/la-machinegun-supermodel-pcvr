@@ -494,8 +494,9 @@ void CNew3D::RenderFrame(void)
 
 	m_vrSceneValid = true;
 	if (GetVRFrameTarget()) {
+		MeasureCameraTurn();
 		DrawVRSubViewports();
-		DrawEyes();
+		DrawEyes(true);
 	}
 }
 
@@ -579,7 +580,7 @@ GLuint CNew3D::GetVRSubTexture(float uv[4]) const
 void CNew3D::RedrawVR(void)
 {
 	if (m_vrSceneValid && GetVRFrameTarget()) {
-		DrawEyes();
+		DrawEyes(false);
 	}
 }
 
@@ -739,10 +740,147 @@ void CNew3D::DrawScene(R3DFrameBuffers& fb, bool processLos, GLuint target)
 	}
 }
 
-void CNew3D::DrawEyes(void)
+void CNew3D::MeasureCameraTurn()
+{
+	// The game's camera rotation since the previous frame, from static scenery: a ROM model
+	// keeps its mesh between frames, and its model-to-view rotation changes only by the camera's
+	// turn. Each model that appears once gives one estimate; the median ignores moving objects.
+	const Node* main = nullptr;
+	for (const auto& n : m_nodes) {
+		if (!n.models.empty() && VRIsMainViewport(n.viewport.vpX, n.viewport.vpWidth, n.viewport.vpHeight) &&
+			(!main || n.models.size() > main->models.size())) {
+			main = &n;
+		}
+	}
+	std::unordered_map<const void*, std::array<float, 9>> now;
+	std::unordered_map<const void*, int> seen;
+	if (main) {
+		for (const auto& m : main->models) {
+			if (!m.meshes || m.dynamic) {
+				continue;
+			}
+			seen[m.meshes.get()]++;
+		}
+		for (const auto& m : main->models) {
+			if (!m.meshes || m.dynamic || seen[m.meshes.get()] != 1) {
+				continue;
+			}
+			const float* M = m.modelMat;
+			std::array<float, 9> r;
+			bool ok = true;
+			for (int c = 0; c < 3; c++) {
+				const float len = std::sqrt(M[c * 4] * M[c * 4] + M[c * 4 + 1] * M[c * 4 + 1] + M[c * 4 + 2] * M[c * 4 + 2]);
+				if (len < 1e-6f) { ok = false; break; }
+				for (int k = 0; k < 3; k++) r[c * 3 + k] = M[c * 4 + k] / len;
+			}
+			if (ok) {
+				now[m.meshes.get()] = r;
+			}
+		}
+	}
+	std::vector<float> angles;
+	angles.reserve(64);
+	for (const auto& kv : now) {
+		auto it = m_vrPrevRot.find(kv.first);
+		if (it == m_vrPrevRot.end()) {
+			continue;
+		}
+		const auto& a = kv.second;		// columns
+		const auto& b = it->second;
+		// trace(A * B^T) = sum over columns of dot(a_c, b_c)
+		float tr = 0.0f;
+		for (int c = 0; c < 3; c++) {
+			tr += a[c * 3] * b[c * 3] + a[c * 3 + 1] * b[c * 3 + 1] + a[c * 3 + 2] * b[c * 3 + 2];
+		}
+		const float cosA = std::clamp((tr - 1.0f) * 0.5f, -1.0f, 1.0f);
+		angles.push_back(std::acos(cosA) * 57.29578f);
+		if (angles.size() >= 64) {
+			break;
+		}
+	}
+	if (angles.size() >= 3) {
+		std::nth_element(angles.begin(), angles.begin() + angles.size() / 2, angles.end());
+		m_vrCamTurn = angles[angles.size() / 2];
+	}
+	else {
+		m_vrCamTurn = 0.0f;		// scene changed (cut) or nothing to compare: no motion
+	}
+	m_vrPrevRot.swap(now);
+}
+
+void CNew3D::DrawVRFlat(IVRFrameTarget* vr)
+{
+	// Cinema mode: the game drawn once, flat (as on a monitor), into the target's texture.
+	VREye t;
+	if (!vr->BeginFlat(t)) {
+		return;
+	}
+	if (t.width != m_vrFbWidth || t.height != m_vrFbHeight) {
+		m_vrFrameBuffers.DestroyFBO();
+		if (m_vrFrameBuffers.CreateFBO(t.width, t.height) != Result::OKAY) {
+			m_vrFbWidth = m_vrFbHeight = 0;
+			vr->EndFlat();
+			return;
+		}
+		m_vrFbWidth = t.width;
+		m_vrFbHeight = t.height;
+	}
+	const float	xRatio = m_xRatio, yRatio = m_yRatio;
+	const unsigned	xOffs = m_xOffs, yOffs = m_yOffs, totalX = m_totalXRes, totalY = m_totalYRes;
+	m_xRatio	= t.width * (float)(1.0 / 496.0);
+	m_yRatio	= t.height * (float)(1.0 / 384.0);
+	m_xOffs		= 0;
+	m_yOffs		= 0;
+	m_totalXRes	= t.width;
+	m_totalYRes	= t.height;
+	std::vector<std::array<float, 4>> spots;
+	spots.reserve(m_nodes.size());
+	for (auto& n : m_nodes) {
+		float* sp = n.viewport.spotEllipse;
+		spots.push_back({ sp[0], sp[1], sp[2], sp[3] });
+		sp[0] = (sp[0] - (float)xOffs) / xRatio * m_xRatio;
+		sp[1] = (sp[1] - (float)yOffs) / yRatio * m_yRatio;
+		sp[2] = sp[2] / xRatio * m_xRatio;
+		sp[3] = sp[3] / yRatio * m_yRatio;
+	}
+	DrawScene(m_vrFrameBuffers, false, t.fbo);
+	size_t i = 0;
+	for (auto& n : m_nodes) {
+		float* sp = n.viewport.spotEllipse;
+		for (int k = 0; k < 4; k++) sp[k] = spots[i][k];
+		i++;
+	}
+	m_xRatio = xRatio; m_yRatio = yRatio; m_xOffs = xOffs; m_yOffs = yOffs;
+	m_totalXRes = totalX; m_totalYRes = totalY;
+	for (auto& n : m_nodes) {
+		CalcViewport(&n.viewport);
+	}
+	vr->EndFlat();
+}
+
+void CNew3D::DrawEyes(bool newFrame)
 {
 	IVRFrameTarget* vr = GetVRFrameTarget();
 	if (!vr) {
+		return;
+	}
+	if (vr->WantsFlat()) {
+		if (newFrame) {
+			VRScreenInfo info;
+			info.hasFrustum = GetMainViewportTangents(info.left, info.right, info.top, info.bottom, &info.mainModels);
+			if (!GetMainViewportRows(info.viewFirstRow, info.viewEndRow)) {
+				info.viewFirstRow = 0;
+				info.viewEndRow = 384;
+			}
+			info.cameraTurn = m_vrCamTurn;
+			vr->SetScreen(info);
+			const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+			glDisable(GL_SCISSOR_TEST);
+			DrawVRFlat(vr);
+			if (scissor) {
+				glEnable(GL_SCISSOR_TEST);
+			}
+		}
 		return;
 	}
 
@@ -755,6 +893,7 @@ void CNew3D::DrawEyes(void)
 			info.viewEndRow = 384;
 		}
 		info.subTexture = GetVRSubTexture(info.subUv);
+		info.cameraTurn = newFrame ? m_vrCamTurn : -1.0f;		// -1: same game frame as before
 		vr->SetScreen(info);
 	}
 

@@ -48,7 +48,8 @@ extern void InfoLog(const char *fmt, ...);
   X(xrBeginFrame) X(xrEndFrame) X(xrLocateViews) X(xrStringToPath) X(xrCreateActionSet) \
   X(xrDestroyActionSet) X(xrCreateAction) X(xrSuggestInteractionProfileBindings) \
   X(xrCreateActionSpace) X(xrAttachSessionActionSets) X(xrSyncActions) \
-  X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetOpenGLGraphicsRequirementsKHR)
+  X(xrGetActionStateBoolean) X(xrGetActionStateFloat) X(xrGetOpenGLGraphicsRequirementsKHR) \
+  X(xrApplyHapticFeedback)
 
 namespace {
 
@@ -134,6 +135,7 @@ uniform int uMode;
 uniform vec2 uKeep;   // HUD: v range of the 3D view; black outside it becomes see-through
 uniform vec4 uSubUv;  // mode 2: game area inside the small-viewport texture (u0, v0, u1, v1)
 uniform vec4 uHide;   // HUD: area left out (u0, v0, u1, v1; v top-first), e.g. player 2's prompt
+uniform int uFilter;  // HUD: 0 soft, 1 sharp, 2 smooth edges
 in vec2 vUv;
 out vec4 fragColor;
 // One texel of the HUD layer, premultiplied; letterbox black becomes fully transparent.
@@ -146,21 +148,49 @@ vec4 hudTexel(ivec2 t, ivec2 size) {
   if (uv.x >= uHide.x && uv.x <= uHide.z && uv.y >= uHide.y && uv.y <= uHide.w) return vec4(0.0);
   return vec4(c.rgb * c.a, c.a);
 }
+bool same(vec4 x, vec4 y) { vec4 d = abs(x - y); return max(max(d.r, d.g), max(d.b, d.a)) < 0.08; }
+// Scale2x: one texel of the 2x image, rounding off diagonal staircases
+vec4 scale2x(ivec2 t2, ivec2 size) {
+  ivec2 t = ivec2(floor(vec2(t2) * 0.5));
+  ivec2 q = t2 - t * 2;
+  vec4 P = hudTexel(t, size);
+  vec4 A = hudTexel(t + ivec2(0, -1), size), D = hudTexel(t + ivec2(0, 1), size);
+  vec4 C = hudTexel(t + ivec2(-1, 0), size), B = hudTexel(t + ivec2(1, 0), size);
+  if (q.x == 0 && q.y == 0) return (same(C, A) && !same(C, D) && !same(A, B)) ? A : P;
+  if (q.x == 1 && q.y == 0) return (same(A, B) && !same(A, C) && !same(B, D)) ? B : P;
+  if (q.x == 0 && q.y == 1) return (same(D, C) && !same(D, B) && !same(C, A)) ? C : P;
+  return (same(B, D) && !same(B, A) && !same(D, C)) ? D : P;
+}
 void main() {
   if (uMode == 0) { fragColor = vec4(texture(uTex, vUv).rgb, 1.0); return; }
+  if (uMode == 3) { fragColor = vec4(texture(uTex, vec2(vUv.x, 1.0 - vUv.y)).rgb, 1.0); return; }
   if (uMode == 2) {
     // flat-rendered small viewports (GL texture, bottom-up); already alpha-weighted
     vec4 c = texture(uTex, vec2(mix(uSubUv.x, uSubUv.z, vUv.x), mix(uSubUv.w, uSubUv.y, vUv.y)));
     fragColor = vec4(c.rgb, c.a);
     return;
   }
-  // Bilinear filtering done by hand, after the letterbox keying, so no dark seams remain.
+  // Filtering done by hand, after the letterbox keying, so no dark seams remain.
+  //   uFilter 0: soft (bilinear)
+  //   uFilter 1: sharp - square pixels with anti-aliased edges
+  //   uFilter 2: smooth edges - pixel-art upscale (Scale2x) first, then sharp
   ivec2 size = textureSize(uTex, 0);
-  vec2 p = vUv * vec2(size) - 0.5;
+  float scale = (uFilter == 2) ? 2.0 : 1.0;
+  vec2 p = vUv * vec2(size) * scale - 0.5;
   ivec2 i = ivec2(floor(p));
   vec2 f = p - floor(p);
-  vec4 a = mix(hudTexel(i, size), hudTexel(i + ivec2(1, 0), size), f.x);
-  vec4 b = mix(hudTexel(i + ivec2(0, 1), size), hudTexel(i + ivec2(1, 1), size), f.x);
+  if (uFilter >= 1) {
+    vec2 w = max(fwidth(p), vec2(1e-4));
+    f = clamp((f - 0.5) / w + 0.5, 0.0, 1.0);
+  }
+  vec4 a, b;
+  if (uFilter == 2) {
+    a = mix(scale2x(i, size), scale2x(i + ivec2(1, 0), size), f.x);
+    b = mix(scale2x(i + ivec2(0, 1), size), scale2x(i + ivec2(1, 1), size), f.x);
+  } else {
+    a = mix(hudTexel(i, size), hudTexel(i + ivec2(1, 0), size), f.x);
+    b = mix(hudTexel(i + ivec2(0, 1), size), hudTexel(i + ivec2(1, 1), size), f.x);
+  }
   fragColor = mix(a, b, f.y);
 })";
 
@@ -495,7 +525,8 @@ bool DesktopXR::CreateActions()
       !make(m_x, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_x", "Coin (left)", false) ||
       !make(m_y, XR_ACTION_TYPE_BOOLEAN_INPUT, "button_y", "Start (left)", false) ||
       !make(m_menu, XR_ACTION_TYPE_BOOLEAN_INPUT, "menu", "Menu", false) ||
-      !make(m_thumbClick, XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_click", "Thumbstick click", true))
+      !make(m_thumbClick, XR_ACTION_TYPE_BOOLEAN_INPUT, "thumb_click", "Thumbstick click", true) ||
+      !make(m_haptic, XR_ACTION_TYPE_VIBRATION_OUTPUT, "recoil", "Recoil", true))
     return false;
 
   auto path = [&](const char* s) {
@@ -519,6 +550,8 @@ bool DesktopXR::CreateActions()
     {m_menu,       path("/user/hand/left/input/menu/click")},
     {m_thumbClick, path("/user/hand/right/input/thumbstick/click")},
     {m_thumbClick, path("/user/hand/left/input/thumbstick/click")},
+    {m_haptic,     path("/user/hand/right/output/haptic")},
+    {m_haptic,     path("/user/hand/left/output/haptic")},
   };
   XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
   suggested.interactionProfile = path("/interaction_profiles/oculus/touch_controller");
@@ -535,6 +568,8 @@ bool DesktopXR::CreateActions()
     {m_trigger, path("/user/hand/left/input/select/click")},
     {m_a,       path("/user/hand/right/input/menu/click")},
     {m_b,       path("/user/hand/left/input/menu/click")},
+    {m_haptic,  path("/user/hand/right/output/haptic")},
+    {m_haptic,  path("/user/hand/left/output/haptic")},
   };
   suggested.interactionProfile = path("/interaction_profiles/khr/simple_controller");
   suggested.suggestedBindings = simple;
@@ -555,6 +590,32 @@ bool DesktopXR::CreateActions()
   attach.actionSets = &m_actionSet;
   return Check(xrAttachSessionActionSets(m_session, &attach), "xrAttachSessionActionSets");
 }
+
+// Comfort vignette: darkens the view outside a circle around the eye's centre (in degrees).
+const char* kVignetteFS = R"(#version 330 core
+uniform vec4 uTan;       // eye field of view: tan left, right, up, down
+uniform vec2 uSize;      // eye image size
+uniform float uRadius;   // open area (radians from the view direction)
+uniform float uSoft;     // width of the fade (radians)
+out vec4 fragColor;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uSize;
+  vec2 t = vec2(mix(uTan.x, uTan.y, uv.x), mix(uTan.w, uTan.z, uv.y));
+  float ang = atan(length(t));
+  float a = smoothstep(uRadius, uRadius + uSoft, ang);
+  fragColor = vec4(0.0, 0.0, 0.0, a);
+})";
+
+const char* kLineVS = R"(#version 330 core
+uniform mat4 uMvp;
+uniform vec3 uA, uB;
+void main() { gl_Position = uMvp * vec4(gl_VertexID == 0 ? uA : uB, 1.0); }
+)";
+const char* kLineFS = R"(#version 330 core
+uniform vec4 uColor;
+out vec4 fragColor;
+void main() { fragColor = uColor; }
+)";
 
 // Hit "static" outside the game's screen. The game draws its static (noise over the picture)
 // on the 2D layer, so it covers only the 4:3 screen. A 1x1 pass measures how much of the layer
@@ -636,12 +697,28 @@ bool DesktopXR::CreateShaders()
   m_uMode = glGetUniformLocation(m_quadProgram, "uMode");
   m_uKeep = glGetUniformLocation(m_quadProgram, "uKeep");
   m_uHide = glGetUniformLocation(m_quadProgram, "uHide");
+  m_uFilter = glGetUniformLocation(m_quadProgram, "uFilter");
   m_uSubUv = glGetUniformLocation(m_quadProgram, "uSubUv");
   m_uDotCenter = glGetUniformLocation(m_dotProgram, "uCenter");
   m_uDotRadius = glGetUniformLocation(m_dotProgram, "uRadius");
   m_uDotColor  = glGetUniformLocation(m_dotProgram, "uColor");
   m_uDotAspect = glGetUniformLocation(m_dotProgram, "uAspect");
   glGenVertexArrays(1, &m_vao);
+
+  m_vignetteProgram = LinkProgram(kFullVS, kVignetteFS);
+  if (m_vignetteProgram) {
+    m_uVigTan    = glGetUniformLocation(m_vignetteProgram, "uTan");
+    m_uVigSize   = glGetUniformLocation(m_vignetteProgram, "uSize");
+    m_uVigRadius = glGetUniformLocation(m_vignetteProgram, "uRadius");
+    m_uVigSoft   = glGetUniformLocation(m_vignetteProgram, "uSoft");
+  }
+  m_lineProgram = LinkProgram(kLineVS, kLineFS);
+  if (!m_lineProgram)
+    return Fail("VR shaders failed to build");
+  m_uLineMvp   = glGetUniformLocation(m_lineProgram, "uMvp");
+  m_uLineA     = glGetUniformLocation(m_lineProgram, "uA");
+  m_uLineB     = glGetUniformLocation(m_lineProgram, "uB");
+  m_uLineColor = glGetUniformLocation(m_lineProgram, "uColor");
 
   m_staticDetectProgram = LinkProgram(kFullVS, kStaticDetectFS);
   m_staticProgram = LinkProgram(kStaticVS, kStaticFS);
@@ -673,6 +750,13 @@ void DesktopXR::Shutdown()
   StopWaitThread();
   if (New3D::GetVRFrameTarget() == this)
     New3D::SetVRFrameTarget(nullptr);
+  if (m_lineProgram) glDeleteProgram(m_lineProgram);
+  m_lineProgram = 0;
+  if (m_vignetteProgram) glDeleteProgram(m_vignetteProgram);
+  m_vignetteProgram = 0;
+  if (m_cinemaFbo) glDeleteFramebuffers(1, &m_cinemaFbo);
+  if (m_cinemaTex) glDeleteTextures(1, &m_cinemaTex);
+  m_cinemaFbo = m_cinemaTex = 0;
   if (m_staticFbo) glDeleteFramebuffers(1, &m_staticFbo);
   if (m_staticTex) glDeleteTextures(1, &m_staticTex);
   if (m_staticProgram) glDeleteProgram(m_staticProgram);
@@ -773,6 +857,101 @@ bool DesktopXR::PollEvents()
     ev = {XR_TYPE_EVENT_DATA_BUFFER};
   }
   return !m_exitRequested;
+}
+
+void DesktopXR::SetMenu(GLuint tex, bool open)
+{
+  m_menuTex = tex;
+  if (open && !m_menuOpen) {
+    // place the panel ~1.4 m in front of the head, level, facing the player
+    const XrVector3f f = Rotate(m_headPose.orientation, {0.f, 0.f, -1.f});
+    m_menuYaw = std::atan2(-f.x, -f.z);
+    const XrVector3f hp = m_headPose.position;
+    m_menuCenter = {hp.x - std::sin(m_menuYaw) * kMenuDistance, hp.y - 0.10f, hp.z - std::cos(m_menuYaw) * kMenuDistance};
+  }
+  m_menuOpen = open;
+}
+
+void DesktopXR::Haptic(int hand, float amplitude, float seconds)
+{
+  if (!m_sessionRunning || m_haptic == XR_NULL_HANDLE || hand < 0 || hand > 1 || !xrApplyHapticFeedback)
+    return;
+  XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+  info.action = m_haptic;
+  info.subactionPath = m_hands[hand];
+  XrHapticVibration vib{XR_TYPE_HAPTIC_VIBRATION};
+  vib.amplitude = amplitude;
+  vib.duration = (XrDuration)(seconds * 1e9);
+  vib.frequency = XR_FREQUENCY_UNSPECIFIED;
+  xrApplyHapticFeedback(m_session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vib));
+}
+
+void DesktopXR::DrawMenuInEye(const New3D::VREye& eye)
+{
+  float proj[16];
+  EyeProjection(eye, proj);
+  const float s = m_config.worldUnitsPerMeter;
+  const float cs = std::cos(m_menuYaw), sn = std::sin(m_menuYaw);
+  // quad at z = -1 in panel space -> the panel centre, turned to face the player
+  const float model[16] = { cs * s, 0, -sn * s, 0,   0, s, 0, 0,   sn * s, 0, cs * s, 0,
+                            (m_menuCenter.x + sn) * s, m_menuCenter.y * s, (m_menuCenter.z + cs) * s, 1 };
+  float vm[16], mvp[16];
+  New3D::VRMul4(eye.view, model, vm);
+  New3D::VRMul4(proj, vm, mvp);
+
+  glBindFramebuffer(GL_FRAMEBUFFER, eye.fbo);
+  glViewport(0, 0, eye.width, eye.height);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_CULL_FACE);
+  glDisable(GL_BLEND);
+  glBindVertexArray(m_vao);
+  glUseProgram(m_quadProgram);
+  glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, mvp);
+  glUniform4f(m_uRect, -0.5f * kMenuWidth, 0.5f * kMenuWidth, 0.5f * kMenuHeight, -0.5f * kMenuHeight);
+  glUniform1i(m_uMode, 3);
+  glActiveTexture(GL_TEXTURE0);
+  glUniform1i(m_uTex, 0);
+  glBindTexture(GL_TEXTURE_2D, m_menuTex);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  // pointer rays from both controllers (to the panel, or 2 m)
+  float pv[16], pmvp[16];
+  const float id[16] = { s, 0, 0, 0,  0, s, 0, 0,  0, 0, s, 0,  0, 0, 0, 1 };
+  New3D::VRMul4(eye.view, id, pv);
+  New3D::VRMul4(proj, pv, pmvp);
+  glUseProgram(m_lineProgram);
+  glUniformMatrix4fv(m_uLineMvp, 1, GL_FALSE, pmvp);
+  for (int h = 0; h < 2; h++) {
+    if (!m_input.rayValid[h])
+      continue;
+    const XrVector3f o = m_input.rayOrigin[h], d = m_input.rayDir[h];
+    const float len = m_input.menuHit[h] ? m_input.menuDist[h] : 2.0f;
+    glUniform3f(m_uLineA, o.x, o.y, o.z);
+    glUniform3f(m_uLineB, o.x + d.x * len, o.y + d.y * len, o.z + d.z * len);
+    if (m_input.menuHit[h]) glUniform4f(m_uLineColor, 1.0f, 0.6f, 0.2f, 1.0f);
+    else                    glUniform4f(m_uLineColor, 0.6f, 0.6f, 0.6f, 1.0f);
+    glDrawArrays(GL_LINES, 0, 2);
+  }
+  glBindVertexArray(0);
+  glUseProgram(0);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void DesktopXR::EyeProjection(const New3D::VREye& eye, float proj[16]) const
+{
+  const float d = m_config.hudDistance;
+  const float n = 0.05f, f = std::max(1000.f, 4.f * d * m_config.worldUnitsPerMeter);
+  const float l = n * eye.tanLeft, r = n * eye.tanRight, t = n * eye.tanUp, b = n * eye.tanDown;
+  for (int i = 0; i < 16; i++) proj[i] = 0.f;
+  proj[0]  = 2 * n / (r - l);
+  proj[5]  = 2 * n / (t - b);
+  proj[8]  = (r + l) / (r - l);
+  proj[9]  = (t + b) / (t - b);
+  proj[10] = -(f + n) / (f - n);
+  proj[11] = -1;
+  proj[14] = -2 * f * n / (f - n);
 }
 
 void DesktopXR::Recenter()
@@ -944,7 +1123,174 @@ bool DesktopXR::BeginFrame()
       (head.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
     m_headPose = head.pose;
 
+  UpdateComfort();
   return m_viewsValid;
+}
+
+void DesktopXR::UpdateComfort()
+{
+  // Vignette strength follows how fast the game's camera turns (degrees per second; the game
+  // runs at 60 frames per second). Closes quickly, opens again slowly.
+  const float speed = m_cameraTurn * 60.f;
+  const float target = (m_config.vignette > 0 && m_inPlay && !m_config.cinema)
+                       ? std::clamp((speed - 25.f) / (110.f - 25.f), 0.f, 1.f) : 0.f;
+  const float dt = (float)std::clamp(m_frameDelta, 0.001, 0.1);
+  const float rate = target > m_vignette ? 8.f : 2.5f;   // per second
+  m_vignette += (target - m_vignette) * std::min(1.f, rate * dt);
+}
+
+void DesktopXR::DrawVignette(const New3D::VREye& eye)
+{
+  if (!m_vignetteProgram || m_vignette < 0.01f)
+    return;
+  static const float kMinRadius[4] = { 90.f, 42.f, 32.f, 24.f };   // degrees, fully closed
+  const float closed = kMinRadius[std::clamp(m_config.vignette, 0, 3)];
+  const float radius = 75.f + (closed - 75.f) * m_vignette;
+  glBindFramebuffer(GL_FRAMEBUFFER, eye.fbo);
+  glViewport(0, 0, eye.width, eye.height);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glBindVertexArray(m_vao);
+  glUseProgram(m_vignetteProgram);
+  glUniform4f(m_uVigTan, eye.tanLeft, eye.tanRight, eye.tanUp, eye.tanDown);
+  glUniform2f(m_uVigSize, (float)eye.width, (float)eye.height);
+  glUniform1f(m_uVigRadius, radius * 0.0174533f);
+  glUniform1f(m_uVigSoft, 14.f * 0.0174533f);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glBindVertexArray(0);
+  glUseProgram(0);
+  glDisable(GL_BLEND);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// ---- Cinema mode: the game drawn flat into a texture, shown on a big screen in a dark room
+
+bool DesktopXR::BeginFlat(New3D::VREye& t)
+{
+  if (!m_config.cinema)
+    return false;
+  if (!m_cinemaFbo) {
+    glGenTextures(1, &m_cinemaTex);
+    glBindTexture(GL_TEXTURE_2D, m_cinemaTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kCinemaW, kCinemaH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glGenFramebuffers(1, &m_cinemaFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_cinemaFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_cinemaTex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      return false;
+    }
+  }
+  // bottom 2D layer (backgrounds) first; the 3D scene is drawn over it by the renderer
+  glBindFramebuffer(GL_FRAMEBUFFER, m_cinemaFbo);
+  glViewport(0, 0, kCinemaW, kCinemaH);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_BLEND);
+  glClearColor(0.f, 0.f, 0.f, 1.f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  glClearColor(0.f, 0.f, 0.f, 0.f);
+  const float id[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+  glBindVertexArray(m_vao);
+  glUseProgram(m_quadProgram);
+  glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, id);
+  glUniform4f(m_uRect, -1.f, 1.f, 1.f, -1.f);
+  glActiveTexture(GL_TEXTURE0);
+  glUniform1i(m_uTex, 0);
+  if (m_backdropTex) {
+    glUniform1i(m_uMode, 0);
+    glBindTexture(GL_TEXTURE_2D, m_backdropTex);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  }
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glBindVertexArray(0);
+  glUseProgram(0);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  t.fbo = m_cinemaFbo;
+  t.width = kCinemaW;
+  t.height = kCinemaH;
+  return true;
+}
+
+void DesktopXR::EndFlat()
+{
+  // top 2D layer (score, text, crosshair) over the 3D scene
+  glBindFramebuffer(GL_FRAMEBUFFER, m_cinemaFbo);
+  glViewport(0, 0, kCinemaW, kCinemaH);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  if (m_hudTopTex) {
+    const float id[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glBindVertexArray(m_vao);
+    glUseProgram(m_quadProgram);
+    glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, id);
+    glUniform4f(m_uRect, -1.f, 1.f, 1.f, -1.f);
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(m_uTex, 0);
+    glUniform1i(m_uMode, 1);
+    glUniform1i(m_uFilter, m_config.hudFilter);
+    glUniform2f(m_uKeep, 0.f, 1.f);
+    if (m_config.hideP2Prompt && m_inPlay)
+      glUniform4f(m_uHide, 236.f / 496.f, 316.f / 384.f, 1.f, 1.f);
+    else
+      glUniform4f(m_uHide, 2.f, 2.f, 2.f, 2.f);
+    glBindTexture(GL_TEXTURE_2D, m_hudTopTex);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDisable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  m_cinemaValid = true;
+}
+
+float DesktopXR::CinemaScale() const
+{
+  static const float kScale[3] = { 0.55f, 0.75f, 1.0f };   // of the game's own field of view
+  return kScale[std::clamp(m_config.cinemaSize, 0, 2)];
+}
+
+void DesktopXR::DrawCinemaInEye(const New3D::VREye& eye)
+{
+  if (!m_cinemaValid)
+    return;
+  float proj[16];
+  EyeProjection(eye, proj);
+  const float d = kCinemaDistance * m_config.worldUnitsPerMeter;
+  const float k = CinemaScale();
+  const float model[16] = { d * k, 0, 0, 0,  0, d * k, 0, 0,  0, 0, d, 0,  0, 0, 0, 1 };
+  float vm[16], mvp[16];
+  New3D::VRMul4(eye.view, model, vm);
+  New3D::VRMul4(proj, vm, mvp);
+  glBindFramebuffer(GL_FRAMEBUFFER, eye.fbo);
+  glViewport(0, 0, eye.width, eye.height);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_BLEND);
+  glBindVertexArray(m_vao);
+  glUseProgram(m_quadProgram);
+  glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, mvp);
+  glUniform4f(m_uRect, m_gameL, m_gameR, m_gameT, m_gameB);
+  glUniform1i(m_uMode, 3);
+  glActiveTexture(GL_TEXTURE0);
+  glUniform1i(m_uTex, 0);
+  glBindTexture(GL_TEXTURE_2D, m_cinemaTex);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glBindVertexArray(0);
+  glUseProgram(0);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void DesktopXR::EndFrame()
@@ -1002,6 +1348,8 @@ void DesktopXR::EndFrame()
 
 void DesktopXR::SetScreen(const New3D::VRScreenInfo& info)
 {
+  if (info.cameraTurn >= 0.f)
+    m_cameraTurn = info.cameraTurn;   // < 0: a redraw of the same game frame
   m_screen = info;
   if (info.hasFrustum)
     SetGameFrustum(info.left, info.right, info.top, info.bottom);
@@ -1104,6 +1452,7 @@ void DesktopXR::DrawHudInEye(const New3D::VREye& eye)
     glUseProgram(m_quadProgram);
     glBindVertexArray(m_vao);
     glActiveTexture(GL_TEXTURE0);
+    glUniform1i(m_uFilter, m_config.hudFilter);
     glUniform1i(m_uMode, 1);
     glUniform2f(m_uKeep, (float)keepFirst / 384.f, (float)keepEnd / 384.f);
     // Player 2's "PRESS START BUTTON" / "INSERT COIN(S)" in the bottom-right corner during play
@@ -1287,13 +1636,16 @@ bool DesktopXR::BeginEye(int eye, New3D::VREye& outEye)
   glViewport(0, 0, sc.width, sc.height);
   glDisable(GL_SCISSOR_TEST);
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-  glClearColor(0.f, 0.f, 0.f, 1.f);
+  if (m_config.cinema)
+    glClearColor(0.02f, 0.02f, 0.025f, 1.f);   // dark room
+  else
+    glClearColor(0.f, 0.f, 0.f, 1.f);
   glClear(GL_COLOR_BUFFER_BIT);
   // Supermodel relies on a transparent clear colour: New3D clears its layer buffers with it,
   // and an opaque one would paint over the 2D background (menus, title screens).
   glClearColor(0.f, 0.f, 0.f, 0.f);
 
-  if (m_backdropTex)
+  if (m_backdropTex && !m_config.cinema)
     DrawBackdrop(outEye);
 
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1304,8 +1656,17 @@ void DesktopXR::EndEye(int eye)
 {
   if (eye < 0 || eye > 1)
     return;
-  if (m_config.hudInEye && m_eyes[eye].acquired != UINT32_MAX)
-    DrawHudInEye(m_curEye[eye]);
+  if (m_eyes[eye].acquired != UINT32_MAX) {
+    if (m_config.cinema)
+      DrawCinemaInEye(m_curEye[eye]);
+    else {
+      if (m_config.hudInEye)
+        DrawHudInEye(m_curEye[eye]);
+      DrawVignette(m_curEye[eye]);
+    }
+    if (m_menuOpen && m_menuTex)
+      DrawMenuInEye(m_curEye[eye]);
+  }
   ReleaseImage(m_eyes[eye]);
   m_eyeDrawn[eye] = true;
 }
@@ -1408,6 +1769,7 @@ void DesktopXR::DrawHud(GLuint topLayerTex, bool pointers, int keepFirstRow, int
     glUniform1i(m_uMode, 1);
     glUniform2f(m_uKeep, (float)keepFirstRow / 384.f, (float)keepEndRow / 384.f);
     glUniform4f(m_uHide, 2.f, 2.f, 2.f, 2.f);
+    glUniform1i(m_uFilter, m_config.hudFilter);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, topLayerTex);
     glUniform1i(m_uTex, 0);
@@ -1494,14 +1856,52 @@ void DesktopXR::SyncInput()
     if ((loc.locationFlags & need) != need)
       continue;
     const XrVector3f o = loc.pose.position;
-    const XrVector3f dir = Rotate(loc.pose.orientation, {0.f, 0.f, -1.f});
+    XrVector3f dir = Rotate(loc.pose.orientation, {0.f, 0.f, -1.f});
+    // aim fine-tune: turn the ray a little to the side / up (degrees)
+    if (m_config.aimNudgeX != 0.f || m_config.aimNudgeY != 0.f) {
+      XrVector3f right = {-dir.z, 0.f, dir.x};   // dir x up, level
+      const float rl = std::sqrt(right.x * right.x + right.z * right.z);
+      if (rl > 1e-4f) {
+        right = {right.x / rl, 0.f, right.z / rl};
+        const XrVector3f up = {right.y * dir.z - right.z * dir.y, right.z * dir.x - right.x * dir.z, right.x * dir.y - right.y * dir.x};
+        const float tx = std::tan(m_config.aimNudgeX * 0.0174533f), ty = std::tan(m_config.aimNudgeY * 0.0174533f);
+        dir = {dir.x + right.x * tx + up.x * ty, dir.y + right.y * tx + up.y * ty, dir.z + right.z * tx + up.z * ty};
+        const float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+        dir = {dir.x / dl, dir.y / dl, dir.z / dl};
+      }
+    }
+    in.rayValid[h] = true;
+    in.rayOrigin[h] = o;
+    in.rayDir[h] = dir;
+    if (m_menuOpen) {
+      // pointer on the menu panel
+      const float cs = std::cos(m_menuYaw), sn = std::sin(m_menuYaw);
+      const XrVector3f n = {sn, 0.f, cs};                  // panel normal, towards the player
+      const float denom = dir.x * n.x + dir.y * n.y + dir.z * n.z;
+      if (denom < -1e-4f) {
+        const XrVector3f c = m_menuCenter;
+        const float t = ((c.x - o.x) * n.x + (c.y - o.y) * n.y + (c.z - o.z) * n.z) / denom;
+        if (t > 0.f) {
+          const XrVector3f p = {o.x + t * dir.x, o.y + t * dir.y, o.z + t * dir.z};
+          const float u = ((p.x - c.x) * cs + (p.z - c.z) * -sn) / kMenuWidth + 0.5f;
+          const float v = 0.5f - (p.y - c.y) / kMenuHeight;
+          in.menuDist[h] = t;
+          in.menuU[h] = u;
+          in.menuV[h] = v;
+          in.menuHit[h] = u >= 0.f && u <= 1.f && v >= 0.f && v <= 1.f;
+        }
+      }
+    }
     if (dir.z > -1e-4f)
       continue;
-    const float t = (-d - o.z) / dir.z;
+    // In cinema mode the screen is smaller and nearer: aim at it instead.
+    const float pd = m_config.cinema ? kCinemaDistance : d;
+    const float ps = m_config.cinema ? CinemaScale() : 1.f;
+    const float t = (-pd - o.z) / dir.z;
     if (t <= 0.f)
       continue;
-    const float px = (o.x + t * dir.x) / d;
-    const float py = (o.y + t * dir.y) / d;
+    const float px = (o.x + t * dir.x) / (pd * ps);
+    const float py = (o.y + t * dir.y) / (pd * ps);
     const float nx = (px - m_gameL) / (m_gameR - m_gameL);
     const float ny = (m_gameT - py) / (m_gameT - m_gameB);
     in.aimValid[h] = true;
