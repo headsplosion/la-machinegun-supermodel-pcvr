@@ -134,7 +134,6 @@ uniform sampler2D uTex;
 uniform int uMode;
 uniform vec2 uKeep;   // HUD: v range of the 3D view; black outside it becomes see-through
 uniform vec4 uSubUv;  // mode 2: game area inside the small-viewport texture (u0, v0, u1, v1)
-uniform vec4 uHide;   // HUD: area left out (u0, v0, u1, v1; v top-first), e.g. player 2's prompt
 uniform int uFilter;  // HUD: 0 soft, 1 sharp, 2 smooth edges
 in vec2 vUv;
 out vec4 fragColor;
@@ -144,8 +143,6 @@ vec4 hudTexel(ivec2 t, ivec2 size) {
   vec4 c = texelFetch(uTex, t, 0);
   float row = (float(t.y) + 0.5) / float(size.y);
   if ((row < uKeep.x || row > uKeep.y) && max(c.r, max(c.g, c.b)) < 0.06) return vec4(0.0);
-  vec2 uv = (vec2(t) + 0.5) / vec2(size);
-  if (uv.x >= uHide.x && uv.x <= uHide.z && uv.y >= uHide.y && uv.y <= uHide.w) return vec4(0.0);
   return vec4(c.rgb * c.a, c.a);
 }
 bool same(vec4 x, vec4 y) { vec4 d = abs(x - y); return max(max(d.r, d.g), max(d.b, d.a)) < 0.08; }
@@ -697,7 +694,6 @@ bool DesktopXR::CreateShaders()
   m_uRect = glGetUniformLocation(m_quadProgram, "uRect");
   m_uMode = glGetUniformLocation(m_quadProgram, "uMode");
   m_uKeep = glGetUniformLocation(m_quadProgram, "uKeep");
-  m_uHide = glGetUniformLocation(m_quadProgram, "uHide");
   m_uFilter = glGetUniformLocation(m_quadProgram, "uFilter");
   m_uSubUv = glGetUniformLocation(m_quadProgram, "uSubUv");
   m_uDotCenter = glGetUniformLocation(m_dotProgram, "uCenter");
@@ -1280,10 +1276,6 @@ void DesktopXR::EndFlat(int view)
     glUniform1i(m_uMode, 1);
     glUniform1i(m_uFilter, m_config.hudFilter);
     glUniform2f(m_uKeep, 0.f, 1.f);
-    if (m_config.hideP2Prompt && m_inPlay)
-      glUniform4f(m_uHide, 236.f / 496.f, 316.f / 384.f, 1.f, 1.f);
-    else
-      glUniform4f(m_uHide, 2.f, 2.f, 2.f, 2.f);
     glBindTexture(GL_TEXTURE_2D, m_hudTopTex);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -1500,14 +1492,6 @@ void DesktopXR::DrawHudInEye(const New3D::VREye& eye)
     glUniform1i(m_uFilter, m_config.hudFilter);
     glUniform1i(m_uMode, 1);
     glUniform2f(m_uKeep, (float)keepFirst / 384.f, (float)keepEnd / 384.f);
-    // Player 2's "PRESS START BUTTON" / "INSERT COIN(S)" in the bottom-right corner during play
-    // (full-height 3D view): left out when VRHideP2Prompt is on. Title, attract and continue
-    // screens keep their prompts.
-    const bool hideP2 = m_config.hideP2Prompt && m_inPlay;
-    if (hideP2)
-      glUniform4f(m_uHide, 236.f / 496.f, 316.f / 384.f, 1.f, 1.f);   // incl. the screen shake on hits
-    else
-      glUniform4f(m_uHide, 2.f, 2.f, 2.f, 2.f);
     glBindTexture(GL_TEXTURE_2D, m_hudTopTex);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   }
@@ -1813,7 +1797,6 @@ void DesktopXR::DrawHud(GLuint topLayerTex, bool pointers, int keepFirstRow, int
     glUniform4f(m_uRect, -1.f, 1.f, 1.f, -1.f);
     glUniform1i(m_uMode, 1);
     glUniform2f(m_uKeep, (float)keepFirstRow / 384.f, (float)keepEndRow / 384.f);
-    glUniform4f(m_uHide, 2.f, 2.f, 2.f, 2.f);
     glUniform1i(m_uFilter, m_config.hudFilter);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, topLayerTex);

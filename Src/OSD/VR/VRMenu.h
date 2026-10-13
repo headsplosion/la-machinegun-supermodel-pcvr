@@ -10,7 +10,7 @@
 // Every option the menu can change. Saved to Config/Supermodel.ini when changed.
 struct VRSettings
 {
-  int   gunHand     = 0;      // 0 = whichever hand fires, 1 = right, 2 = left
+  int   gunHand     = 0;      // 0 = whichever hand fires, 1 = right, 2 = left, 3 = both (akimbo)
   int   vignette    = 2;      // comfort vignette during fast camera turns: 0 off .. 3 strong
   bool  cinema      = false;  // play on a big screen in a dark room
   int   cinemaSize  = 1;      // 0 small, 1 medium, 2 large

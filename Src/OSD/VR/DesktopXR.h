@@ -99,6 +99,7 @@ public:
 
   bool PollEvents();          // false = the runtime asked us to quit
   bool IsSessionRunning() const { return m_sessionRunning; }
+  bool InPlay() const { return m_inPlay; }        // gameplay on screen (full-height 3D scene)
   bool IsFocused() const { return m_focused; }   // the app is in front and gets input (headset in use)
 
   // xrWaitFrame + xrBeginFrame + locate views/controllers. True if eyes should be drawn.
@@ -256,7 +257,7 @@ private:
   int    m_playSwitchFrames = 0;
   New3D::VREye m_curEye[2];
   GLuint m_quadProgram = 0;     // textured quad (backdrop + HUD)
-  GLint  m_uMvp = -1, m_uTex = -1, m_uRect = -1, m_uMode = -1, m_uKeep = -1, m_uSubUv = -1, m_uHide = -1;
+  GLint  m_uMvp = -1, m_uTex = -1, m_uRect = -1, m_uMode = -1, m_uKeep = -1, m_uSubUv = -1;
   GLuint m_dotProgram = 0;      // pointer dots on the HUD
   GLint  m_uDotCenter = -1, m_uDotRadius = -1, m_uDotColor = -1, m_uDotAspect = -1;
   GLuint m_vao = 0;

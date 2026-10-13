@@ -577,6 +577,26 @@ void CTileGen::RecomputePalettes(int layer)
 	}
 }
 
+TileGenHide g_tileGenHide;
+
+// Which halves (bit 0 = left tile, bit 1 = right tile) of a tile pair g_tileGenHide leaves out
+static int HiddenHalves(int layer, int tilePairNumber, UINT32 tileData)
+{
+	const TileGenHide &h = g_tileGenHide;
+	if (!h.on || layer != h.layer)
+		return 0;
+	const int row = tilePairNumber >> 5;
+	if (row < h.row0 || row > h.row1)
+		return 0;
+	int mask = 0;
+	const int col = (tilePairNumber & 31) * 2;
+	const unsigned codes[2] = { tileData >> 16, tileData & 0xFFFFu };
+	for (int k = 0; k < 2; k++)
+		if (col + k >= h.col0 && col + k <= h.col1 && codes[k] >= h.code0 && codes[k] <= h.code1)
+			mask |= 1 << k;
+	return mask;
+}
+
 void CTileGen::DrawLine(int line)
 {
 	for (int i = 2; i-- > 0;) {
@@ -614,11 +634,26 @@ void CTileGen::DrawLine(int line)
 				int vFine			= GetVFine(line, scrollY[layer]);
 				int tileData		= GetTileData(index, tilePairNumber);
 
+				// PC VR: a hidden tile keeps the pixels below it (saved here, put back after drawing)
+				const int hidden	= HiddenHalves(index, tilePairNumber, (UINT32)tileData);
+				const int x0		= x;
+				UINT32 keep[16];
+				if (hidden) {
+					for (int i = hStart; i < hEnd && x0 + i - hStart < 496; i++)
+						keep[i] = drawLayers[layer][x0 + i - hStart];
+				}
+
 				if (Is4Bit(index)) {
 					Draw4BitTilePair(tileData, hStart, hEnd, vFine, drawLayers[layer], m_pal[index / 2], x);
 				}
 				else {
 					Draw8BitTilePair(tileData, hStart, hEnd, vFine, drawLayers[layer], m_pal[index / 2], x);
+				}
+
+				if (hidden) {
+					for (int i = hStart; i < hEnd && x0 + i - hStart < 496; i++)
+						if (hidden & (1 << (i / 8)))
+							drawLayers[layer][x0 + i - hStart] = keep[i];
 				}
 			}
 			else {

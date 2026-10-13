@@ -32,6 +32,18 @@
 #include "Graphics/Render2D.h"
 #include "TileGenBuffer.h"
 
+// PC VR: a block of name-table entries left undrawn, e.g. a prompt the player doesn't need
+// (L.A. Machineguns: player 2's "PRESS START BUTTON" during single-player play). Entries are
+// matched by layer, row, 16-bit entry column and tile code, so scrolling (the screen shake on
+// hits) moves the hidden block with the text and nothing else on screen is touched.
+struct TileGenHide
+{
+  volatile bool on = false;
+  int layer = 0, row0 = 0, row1 = -1, col0 = 0, col1 = -1;   // rows 0..63, columns 0..63 (inclusive)
+  unsigned code0 = 0, code1 = 0;                             // 16-bit entry range (inclusive)
+};
+extern TileGenHide g_tileGenHide;
+
   /*
    * CTileGen:
    *

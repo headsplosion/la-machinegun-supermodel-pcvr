@@ -863,6 +863,9 @@ static float s_vrAimScaleY = 1.0f, s_vrAimOffsetY = 0.0f;
 static VRSettings s_vrSettings;
 static VRMenu     s_vrMenu;
 static bool       s_vrMenuOpen = false;
+static uint64_t   s_vrEmuFramesPosted = 0;      // emulator frames started (VR loop)
+static uint64_t   s_vrAkimboFrame = ~0ull;      // akimbo: frame the current hand was picked for
+static uint32_t   s_vrAkimboSeed = 0x9E3779B9u;
 static bool       s_vrMenuPaused = false;      // the menu paused the game (not the user)
 static bool       s_vrPrevMenuButton = false;
 static bool       s_vrHoldTrigger = false;     // after closing the menu: ignore the trigger until released
@@ -872,7 +875,7 @@ static double     s_vrRecoilTimer = 0.0;
 static void VRReadSettings()
 {
   VRSettings &v = s_vrSettings;
-  v.gunHand     = std::clamp(s_runtime_config["VRGunHand"].ValueAsDefault<int>(v.gunHand), 0, 2);
+  v.gunHand     = std::clamp(s_runtime_config["VRGunHand"].ValueAsDefault<int>(v.gunHand), 0, 3);
   v.vignette    = std::clamp(s_runtime_config["VRVignette"].ValueAsDefault<int>(v.vignette), 0, 3);
   v.cinema      = s_runtime_config["VRCinema"].ValueAsDefault<bool>(v.cinema);
   v.cinemaSize  = std::clamp(s_runtime_config["VRCinemaSize"].ValueAsDefault<int>(v.cinemaSize), 0, 2);
@@ -1041,6 +1044,7 @@ static void VRPump(CModel3 *model3, bool &inFlight, int &owed, bool &haveNew, in
   if (!inFlight && owed > 0)
   {
     model3->PostFrameAsync();
+    s_vrEmuFramesPosted++;
     inFlight = true;
     owed--;
     statEmu++;
@@ -1070,6 +1074,20 @@ static void ApplyVRInput(DesktopXR &xr)
     s_vrGunHand = 0;          // right
   else if (s_vrSettings.gunHand == 2)
     s_vrGunHand = 1;          // left
+  else if (s_vrSettings.gunHand == 3 && in.trigger[0] && in.trigger[1] && in.aimValid[0] && in.aimValid[1])
+  {
+    // Akimbo: both triggers held. The game has one gun, so each game frame it gets the aim of
+    // one hand, picked at random: whatever the game's rate of fire, each hand gets about half
+    // the shots, and the game's crosshair shows at both aim points.
+    if (s_vrEmuFramesPosted != s_vrAkimboFrame)
+    {
+      s_vrAkimboFrame = s_vrEmuFramesPosted;
+      s_vrAkimboSeed ^= s_vrAkimboSeed << 13;
+      s_vrAkimboSeed ^= s_vrAkimboSeed >> 17;
+      s_vrAkimboSeed ^= s_vrAkimboSeed << 5;
+      s_vrGunHand = (int)((s_vrAkimboSeed >> 7) & 1);
+    }
+  }
   int h = s_vrGunHand;
   if (!in.aimValid[h] && in.aimValid[1 - h])
     h = 1 - h;
@@ -1081,7 +1099,8 @@ static void ApplyVRInput(DesktopXR &xr)
     g_vrInput.x = std::clamp(in.aimX[h] * s_vrAimScaleX + s_vrAimOffsetX, 0.0f, 1.0f);
     g_vrInput.y = std::clamp(in.aimY[h] * s_vrAimScaleY + s_vrAimOffsetY, 0.0f, 1.0f);
   }
-  const bool anyTrigger = s_vrSettings.gunHand == 0 ? (in.trigger[0] || in.trigger[1]) : in.trigger[h];
+  const bool eitherHand = s_vrSettings.gunHand == 0 || s_vrSettings.gunHand == 3;
+  const bool anyTrigger = eitherHand ? (in.trigger[0] || in.trigger[1]) : in.trigger[h];
   if (!anyTrigger)
     s_vrHoldTrigger = false;
   g_vrInput.mouseLeft   = anyTrigger && !s_vrHoldTrigger && !s_vrMenuOpen;
@@ -1291,6 +1310,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
     { "lamachin", 0x1234, { 0xBF, 0x40, 0xBF, 0x40 } },   // Y max, Y min, X max, X min
   };
   const VRGunCalibration *vrGunCal = nullptr;
+  bool vrHideP2Tiles = false;
   int vrFocusFrames = 0;
   std::string vrBootPath;
   double vrEmuAccumulator = 0.0;
@@ -1389,6 +1409,17 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
             vrGunCal = &c;
         if (vrGunCal)
           InfoLog("VR: wide gun calibration for '%s'", vrGunCal->game);
+      }
+      // Player 2's "PRESS START BUTTON" during play: the game draws it into its own tiles
+      // (0x3300-0x3331) on 2D layer 0, name-table rows 45-46, right half. Only those tiles are left out,
+      // so subtitles and everything else in that corner stay.
+      vrHideP2Tiles = (game.name == "lamachin");
+      if (vrHideP2Tiles)
+      {
+        g_tileGenHide.layer = 0;
+        g_tileGenHide.row0 = 45;  g_tileGenHide.row1 = 46;
+        g_tileGenHide.col0 = 32;  g_tileGenHide.col1 = 63;
+        g_tileGenHide.code0 = 0x3300;  g_tileGenHide.code1 = 0x333F;
       }
       if (vrAsync)
       {
@@ -1513,6 +1544,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         }
       }
       ApplyVRInput(*xr);
+      g_tileGenHide.on = vrHideP2Tiles && s_vrSettings.hideP2 && xr->InPlay();
 
       // Options menu: left controller's menu button opens/closes it; the game pauses meanwhile.
       {
@@ -1580,7 +1612,17 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
         s_vrRecoilTimer -= xr->FrameDeltaSeconds();
         if (s_vrRecoilTimer <= 0.0)
         {
-          xr->Haptic(s_vrGunHand, s_vrSettings.recoil == 1 ? 0.35f : 0.8f, 0.035f);
+          const float amp = s_vrSettings.recoil == 1 ? 0.35f : 0.8f;
+          if (s_vrSettings.gunHand == 3)
+          {
+            // akimbo: every hand that holds its trigger kicks
+            const DesktopXRInput &vin = xr->Input();
+            for (int hand = 0; hand < 2; hand++)
+              if (vin.trigger[hand])
+                xr->Haptic(hand, amp, 0.035f);
+          }
+          else
+            xr->Haptic(s_vrGunHand, amp, 0.035f);
           s_vrRecoilTimer = 1.0 / 12.0;   // about the game's rate of fire
         }
       }
@@ -1697,6 +1739,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       }
       xr->SuppressEyes(false);
       vrStatEmu += vrFramesToRun;
+      s_vrEmuFramesPosted += vrFramesToRun;
       if (vrFramesToRun)
         vrStatEmuSecs += (double)(SDL_GetPerformanceCounter() - t0) / (double)s_perfCounterFrequency;
     }

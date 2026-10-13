@@ -48,7 +48,11 @@ Options menu (left controller's menu button)
            Cinema mode - the game on a big screen in a dark room: no camera motion around you
                       at all. Small / Medium / Large screen, and 3D depth: Flat / Shallow /
                       Full - like a 3D TV, the game's world sits behind the screen.
-  Gun      Gun hand - Either (the hand that last fired) / Right / Left.
+  Gun      Gun hand - Either (the hand that last fired) / Right / Left / Both. Both (akimbo)
+                      gives you a gun in each hand for one player: with both triggers held,
+                      the game's single gun takes turns between the two aim points, frame by
+                      frame, so each hand gets about half the shots and the crosshair shows
+                      (flickering) at both. With one trigger held, that hand is the gun.
            Recoil vibration - Off / Light / Strong.
            Aim fine-tune - nudge the aim left/right and up/down in 0.1 degree steps, if the
                       crosshair sits a little off from where you point.
@@ -78,13 +82,14 @@ Settings (Config/Supermodel.ini, [ Global ])
                         cutscenes and stay fixed in the room on menus; 1 = always follow the
                         head; 0 = always fixed in the room
   VRHideP2Prompt        1 = hide player 2's "PRESS START BUTTON" in the bottom-right corner
-                        during play (it keeps flashing in single-player games)
+                        during play (it keeps flashing in single-player games). Only the
+                        prompt's own tiles are left out, so subtitles near it stay.
   VRStaticFill          1 = when you're hit, the game's flickering "static" fills your whole
                         view instead of only the original 4:3 screen
   VRVignette            0-3 comfort vignette (see the options menu)
   VRCinema, VRCinemaSize, VRCinemaDepth
                         cinema mode on/off, screen size 0-2, 3D depth 0 flat / 1 shallow / 2 full
-  VRGunHand             0 = either, 1 = right, 2 = left
+  VRGunHand             0 = either, 1 = right, 2 = left, 3 = both (akimbo)
   VRRecoil              0 = off, 1 = light, 2 = strong
   VRAimNudgeX/Y         aim fine-tune in degrees
   VRHudFilter           0 = soft, 1 = sharp, 2 = smooth edges
