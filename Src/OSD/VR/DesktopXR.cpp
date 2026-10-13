@@ -133,6 +133,7 @@ uniform sampler2D uTex;
 uniform int uMode;
 uniform vec2 uKeep;   // HUD: v range of the 3D view; black outside it becomes see-through
 uniform vec4 uSubUv;  // mode 2: game area inside the small-viewport texture (u0, v0, u1, v1)
+uniform vec4 uHide;   // HUD: area left out (u0, v0, u1, v1; v top-first), e.g. player 2's prompt
 in vec2 vUv;
 out vec4 fragColor;
 // One texel of the HUD layer, premultiplied; letterbox black becomes fully transparent.
@@ -141,6 +142,8 @@ vec4 hudTexel(ivec2 t, ivec2 size) {
   vec4 c = texelFetch(uTex, t, 0);
   float row = (float(t.y) + 0.5) / float(size.y);
   if ((row < uKeep.x || row > uKeep.y) && max(c.r, max(c.g, c.b)) < 0.06) return vec4(0.0);
+  vec2 uv = (vec2(t) + 0.5) / vec2(size);
+  if (uv.x >= uHide.x && uv.x <= uHide.z && uv.y >= uHide.y && uv.y <= uHide.w) return vec4(0.0);
   return vec4(c.rgb * c.a, c.a);
 }
 void main() {
@@ -564,6 +567,7 @@ bool DesktopXR::CreateShaders()
   m_uRect = glGetUniformLocation(m_quadProgram, "uRect");
   m_uMode = glGetUniformLocation(m_quadProgram, "uMode");
   m_uKeep = glGetUniformLocation(m_quadProgram, "uKeep");
+  m_uHide = glGetUniformLocation(m_quadProgram, "uHide");
   m_uSubUv = glGetUniformLocation(m_quadProgram, "uSubUv");
   m_uDotCenter = glGetUniformLocation(m_dotProgram, "uCenter");
   m_uDotRadius = glGetUniformLocation(m_dotProgram, "uRadius");
@@ -907,6 +911,17 @@ void DesktopXR::SetScreen(const New3D::VRScreenInfo& info)
   if (info.hasFrustum)
     SetGameFrustum(info.left, info.right, info.top, info.bottom);
 
+  // Gameplay (full-height 3D view with a real scene): entered after ~1/3 s, left only after
+  // ~1/2 s of something else, so short effects (the hit "static") don't count as leaving it.
+  const bool play = info.hasFrustum && !info.subTexture && info.mainModels >= 48 && info.viewEndRow - info.viewFirstRow > 370;
+  if (play == m_inPlay)
+    m_playSwitchFrames = 0;
+  else if (++m_playSwitchFrames >= (play ? 20 : 30)) {
+    m_inPlay = play;
+    m_playSwitchFrames = 0;
+    InfoLog("VR: gameplay %s", play ? "on screen" : "off screen");
+  }
+
   // VRHudLock 2: the 2D layer follows the head only while a real 3D scene is on screen (play,
   // cutscenes: hundreds of models). Logos, the title and menus are 2D (at most a handful of
   // models, or small preview viewports) and stay fixed in the room. Switch only after the new
@@ -990,6 +1005,14 @@ void DesktopXR::DrawHudInEye(const New3D::VREye& eye)
   if (m_hudTopTex) {
     glUniform1i(m_uMode, 1);
     glUniform2f(m_uKeep, (float)keepFirst / 384.f, (float)keepEnd / 384.f);
+    // Player 2's "PRESS START BUTTON" / "INSERT COIN(S)" in the bottom-right corner during play
+    // (full-height 3D view): left out when VRHideP2Prompt is on. Title, attract and continue
+    // screens keep their prompts.
+    const bool hideP2 = m_config.hideP2Prompt && m_inPlay;
+    if (hideP2)
+      glUniform4f(m_uHide, 236.f / 496.f, 316.f / 384.f, 1.f, 1.f);   // incl. the screen shake on hits
+    else
+      glUniform4f(m_uHide, 2.f, 2.f, 2.f, 2.f);
     glBindTexture(GL_TEXTURE_2D, m_hudTopTex);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   }
@@ -1246,6 +1269,7 @@ void DesktopXR::DrawHud(GLuint topLayerTex, bool pointers, int keepFirstRow, int
     glUniform4f(m_uRect, -1.f, 1.f, 1.f, -1.f);
     glUniform1i(m_uMode, 1);
     glUniform2f(m_uKeep, (float)keepFirstRow / 384.f, (float)keepEndRow / 384.f);
+    glUniform4f(m_uHide, 2.f, 2.f, 2.f, 2.f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, topLayerTex);
     glUniform1i(m_uTex, 0);

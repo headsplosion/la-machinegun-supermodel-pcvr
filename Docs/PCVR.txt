@@ -58,6 +58,8 @@ Settings (Config/Supermodel.ini, [ Global ])
   VRHudLock             2 = score, timer and text follow your head during play and
                         cutscenes and stay fixed in the room on menus; 1 = always follow the
                         head; 0 = always fixed in the room
+  VRHideP2Prompt        1 = hide player 2's "PRESS START BUTTON" in the bottom-right corner
+                        during play (it keeps flashing in single-player games)
   VRHudLayer            0 = draw score/crosshair into the 3D image (exact alignment);
                         1 = use a separate compositor layer (sharper text, may drift)
   VRGunCalibration      1 = set the wide gun calibration in the game (see below)

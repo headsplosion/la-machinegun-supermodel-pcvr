@@ -1221,6 +1221,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       vc.refreshHz          = s_runtime_config["VRRefreshHz"].ValueAsDefault<float>(vc.refreshHz);
       vc.hudInEye           = !s_runtime_config["VRHudLayer"].ValueAsDefault<bool>(false);
       vc.hudLock            = s_runtime_config["VRHudLock"].ValueAsDefault<int>(vc.hudLock);
+      vc.hideP2Prompt       = s_runtime_config["VRHideP2Prompt"].ValueAsDefault<bool>(vc.hideP2Prompt);
       xr = std::make_unique<DesktopXR>();
       if (!xr->Init(vc))
       {

@@ -64,6 +64,7 @@ public:
     int   hudLock            = 2;      // 2D layer (score, timer, text): 0 = fixed in the room,
                                        // 1 = follows the head, 2 = follows the head while the
                                        // game shows 3D (play, cutscenes), fixed for 2D menus
+    bool  hideP2Prompt       = true;   // leave out player 2's "PRESS START BUTTON" during play
   };
 
   ~DesktopXR();
@@ -218,9 +219,11 @@ private:
   New3D::VRScreenInfo m_screen;
   bool   m_hudOnHead = false;   // VRHudLock 2: current choice, switched after a short steady period
   int    m_hudSwitchFrames = 0;
+  bool   m_inPlay = false;      // gameplay on screen (for VRHideP2Prompt), with the same kind of delay
+  int    m_playSwitchFrames = 0;
   New3D::VREye m_curEye[2];
   GLuint m_quadProgram = 0;     // textured quad (backdrop + HUD)
-  GLint  m_uMvp = -1, m_uTex = -1, m_uRect = -1, m_uMode = -1, m_uKeep = -1, m_uSubUv = -1;
+  GLint  m_uMvp = -1, m_uTex = -1, m_uRect = -1, m_uMode = -1, m_uKeep = -1, m_uSubUv = -1, m_uHide = -1;
   GLuint m_dotProgram = 0;      // pointer dots on the HUD
   GLint  m_uDotCenter = -1, m_uDotRadius = -1, m_uDotColor = -1, m_uDotAspect = -1;
   GLuint m_vao = 0;
