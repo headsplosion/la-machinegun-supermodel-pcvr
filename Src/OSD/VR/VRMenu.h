@@ -5,6 +5,7 @@
 // VR layer shows as a panel in front of the player; the controller is the mouse.
 
 #include <GL/glew.h>
+#include <string>
 
 // Every option the menu can change. Saved to Config/Supermodel.ini when changed.
 struct VRSettings
@@ -35,11 +36,13 @@ struct VRMenuResult
 class VRMenu
 {
 public:
-  static constexpr int Width  = 960;
-  static constexpr int Height = 720;
-
   ~VRMenu();
-  bool   Init();                 // GL context must be current
+  // GL context must be current. assetDir: folder with the optional menu artwork
+  // (VRMenuFrame.tga: a frame picture whose inner rectangle holds the options) and font
+  // (VRMenuFont.ttf). Without them the menu is a plain dark panel with the default font.
+  bool   Init(const std::string &assetDir);
+  int    Width() const { return m_w; }
+  int    Height() const { return m_h; }
   void   Shutdown();
   // Draws the menu into Texture(). pointer: position on the panel (0..1, y down), valid = the
   // controller points at it; press = trigger held.
@@ -49,6 +52,9 @@ public:
 private:
   void *m_ctx = nullptr;         // ImGuiContext
   GLuint m_tex = 0, m_fbo = 0;
+  GLuint m_frameTex = 0;         // artwork (0 = plain panel)
+  int    m_w = 960, m_h = 720;   // menu image size
+  float  m_inner[4] = {0, 0, 0, 0};   // where the options go (x0, y0, x1, y1, menu pixels)
   bool m_ready = false;
 };
 

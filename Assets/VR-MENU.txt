@@ -1,0 +1,6 @@
+VRMenuFont.ttf is Michroma by The Michroma Project Authors, licensed under the SIL Open Font
+License 1.1 (VRMenuFont-OFL.txt). It is the typeface of the in-headset options menu.
+
+Optional menu artwork (not included): put a frame picture as VRMenuFrame.tga (uncompressed
+32-bit, transparent where the room should show through) and VRMenuFrame.txt with the inner
+rectangle "x0 y0 x1 y1" in picture pixels; the options are laid out inside that rectangle.

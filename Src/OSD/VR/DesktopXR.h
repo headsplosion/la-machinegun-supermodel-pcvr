@@ -91,7 +91,7 @@ public:
   Config& Settings() { return m_config; }   // options the menu can change at run time
 
   // Options menu: texture from VRMenu, shown as a panel in front of the head while open.
-  void SetMenu(GLuint tex, bool open);
+  void SetMenu(GLuint tex, bool open, float aspect = 0.75f);   // aspect = height / width
   bool MenuOpen() const { return m_menuOpen; }
   // Controller vibration on one hand (0 = right), amplitude 0..1.
   void Haptic(int hand, float amplitude, float seconds);
@@ -276,7 +276,8 @@ private:
   GLuint m_lineProgram = 0;
   GLint  m_uLineMvp = -1, m_uLineA = -1, m_uLineB = -1, m_uLineColor = -1;
 
-  static constexpr float kMenuWidth = 1.20f, kMenuHeight = 0.90f, kMenuDistance = 1.4f;   // metres
+  static constexpr float kMenuDistance = 1.4f;   // metres
+  float      kMenuWidth = 1.30f, kMenuHeight = 0.975f; // panel size in metres (from the menu's aspect)
   bool       m_menuOpen = false;
   GLuint     m_menuTex = 0;
   float      m_menuYaw = 0.f;

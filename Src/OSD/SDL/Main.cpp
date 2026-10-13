@@ -1397,7 +1397,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       }
       InfoLog("VR: started on '%s'", xr->RuntimeName().c_str());
       VRApplySettings(*xr);
-      if (!s_vrMenu.Init())
+      if (!s_vrMenu.Init(Util::Format() << FileSystemPath::GetPath(FileSystemPath::Assets)))
         InfoLog("VR: options menu unavailable");
     }
     else
@@ -1571,7 +1571,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
           }
           InfoLog("VR: options menu %s", s_vrMenuOpen ? "open" : "closed");
         }
-        xr->SetMenu(s_vrMenu.Texture(), s_vrMenuOpen);
+        xr->SetMenu(s_vrMenu.Texture(), s_vrMenuOpen, (float)s_vrMenu.Height() / (float)std::max(1, s_vrMenu.Width()));
       }
 
       // Recoil: short pulses on the gun hand while firing.

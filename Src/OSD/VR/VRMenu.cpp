@@ -6,14 +6,26 @@
 #include <algorithm>
 #include <cfloat>
 #include <cstdio>
+#include <cstdint>
+#include <vector>
 
 namespace
 {
+  // All capitals, like the lettering in the title artwork.
+  std::string Caps(const char *text)
+  {
+    std::string t(text);
+    for (auto &c : t)
+      if (c >= 'a' && c <= 'z')
+        c = (char)(c - 'a' + 'A');
+    return t;
+  }
+
   // A row of buttons, the current one highlighted - easier to hit with a laser than a combo box.
   bool Choice(const char *label, int *value, const char *const *names, int count)
   {
     bool changed = false;
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(Caps(label).c_str());
     ImGui::PushID(label);
     const float avail = ImGui::GetContentRegionAvail().x;
     const float w = (avail - ImGui::GetStyle().ItemSpacing.x * (count - 1)) / (float)count;
@@ -23,8 +35,8 @@ namespace
         ImGui::SameLine();
       const bool on = (*value == i);
       if (on)
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.45f, 0.10f, 1.0f));
-      if (ImGui::Button(names[i], ImVec2(w, 0)) && !on)
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.82f, 0.08f, 0.06f, 1.0f));   // the banner red
+      if (ImGui::Button(Caps(names[i]).c_str(), ImVec2(w, 0)) && !on)
       {
         *value = i;
         changed = true;
@@ -50,7 +62,7 @@ namespace
   bool Stepper(const char *label, float *value, float step, float lo, float hi, const char *fmt)
   {
     bool changed = false;
-    ImGui::TextUnformatted(label);
+    ImGui::TextUnformatted(Caps(label).c_str());
     ImGui::PushID(label);
     const float bw = 110.0f;
     if (ImGui::Button("-", ImVec2(bw, 0)))
@@ -61,6 +73,8 @@ namespace
     ImGui::SameLine();
     char text[32];
     std::snprintf(text, sizeof(text), fmt, *value);
+    for (char *c = text; *c; c++)
+      if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 'a' + 'A');
     const float tw = ImGui::GetContentRegionAvail().x - bw - ImGui::GetStyle().ItemSpacing.x;
     ImGui::Button(text, ImVec2(tw, 0));
     ImGui::SameLine();
@@ -81,10 +95,92 @@ VRMenu::~VRMenu()
   Shutdown();
 }
 
-bool VRMenu::Init()
+namespace
+{
+  // Uncompressed 32-bit TGA (what the menu artwork is saved as) -> RGBA, rows top-first.
+  bool LoadTGA(const std::string &path, std::vector<unsigned char> &rgba, int &w, int &h)
+  {
+    FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f)
+      return false;
+    unsigned char hdr[18];
+    bool ok = std::fread(hdr, 1, 18, f) == 18 && hdr[2] == 2 && hdr[16] == 32;
+    if (ok)
+    {
+      w = hdr[12] | (hdr[13] << 8);
+      h = hdr[14] | (hdr[15] << 8);
+      ok = w > 0 && h > 0 && w <= 4096 && h <= 4096;
+    }
+    if (ok)
+    {
+      std::fseek(f, 18 + hdr[0], SEEK_SET);
+      std::vector<unsigned char> bgra((size_t)w * h * 4);
+      ok = std::fread(bgra.data(), 1, bgra.size(), f) == bgra.size();
+      if (ok)
+      {
+        const bool topFirst = (hdr[17] & 0x20) != 0;
+        rgba.resize(bgra.size());
+        for (int y = 0; y < h; y++)
+        {
+          const unsigned char *src = &bgra[(size_t)(topFirst ? y : h - 1 - y) * w * 4];
+          unsigned char *dst = &rgba[(size_t)y * w * 4];
+          for (int x = 0; x < w; x++)
+          {
+            dst[x * 4 + 0] = src[x * 4 + 2];
+            dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4 + 0];
+            dst[x * 4 + 3] = src[x * 4 + 3];
+          }
+        }
+      }
+    }
+    std::fclose(f);
+    return ok;
+  }
+
+  bool FileExists(const std::string &path)
+  {
+    if (FILE *f = std::fopen(path.c_str(), "rb"))
+    {
+      std::fclose(f);
+      return true;
+    }
+    return false;
+  }
+}
+
+bool VRMenu::Init(const std::string &assetDir)
 {
   if (m_ready)
     return true;
+
+  // Artwork: the frame picture. Its inner rectangle (where the options go) is found from the
+  // companion VRMenuFrame.txt ("x0 y0 x1 y1" in picture pixels) or defaults to the middle.
+  std::vector<unsigned char> frame;
+  int fw = 0, fh = 0;
+  const bool haveFrame = LoadTGA(assetDir + "VRMenuFrame.tga", frame, fw, fh);
+  if (haveFrame)
+  {
+    const float scale = 1600.0f / (float)fw;   // render the menu sharper than the picture
+    m_w = 1600;
+    m_h = (int)(fh * scale + 0.5f);
+    float r[4] = { fw * 0.06f, fh * 0.27f, fw * 0.94f, fh * 0.93f };
+    if (FILE *f = std::fopen((assetDir + "VRMenuFrame.txt").c_str(), "r"))
+    {
+      float v[4];
+      if (std::fscanf(f, "%f %f %f %f", &v[0], &v[1], &v[2], &v[3]) == 4)
+        for (int i = 0; i < 4; i++) r[i] = v[i];
+      std::fclose(f);
+    }
+    for (int i = 0; i < 4; i++)
+      m_inner[i] = r[i] * scale;
+  }
+  else
+  {
+    m_w = 960;
+    m_h = 720;
+    m_inner[0] = 0; m_inner[1] = 0; m_inner[2] = (float)m_w; m_inner[3] = (float)m_h;
+  }
 
   ImGuiContext *previous = ImGui::GetCurrentContext();
   ImGuiContext *ctx = ImGui::CreateContext();
@@ -93,37 +189,66 @@ bool VRMenu::Init()
   ImGuiIO &io = ImGui::GetIO();
   io.IniFilename = nullptr;   // no imgui.ini next to the game
   io.LogFilename = nullptr;
-  io.DisplaySize = ImVec2((float)Width, (float)Height);
-  ImFontConfig font;
-  font.SizePixels = 30.0f;
-  font.OversampleH = font.OversampleV = 1;
-  io.Fonts->AddFontDefault(&font);
+  io.DisplaySize = ImVec2((float)m_w, (float)m_h);
+  const std::string fontPath = assetDir + "VRMenuFont.ttf";
+  ImFont *font = nullptr;
+  if (FileExists(fontPath))
+  {
+    ImFontConfig cfg;
+    cfg.OversampleH = 2;
+    font = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), haveFrame ? 28.0f : 22.0f, &cfg);
+  }
+  if (!font)
+  {
+    ImFontConfig cfg;
+    cfg.SizePixels = 30.0f;
+    io.Fonts->AddFontDefault(&cfg);
+  }
 
+  // Colours taken from the title artwork: cream letters, the red banner, gunmetal.
+  const ImVec4 cream(0.95f, 0.94f, 0.84f, 1.0f), red(0.82f, 0.08f, 0.06f, 1.0f), redHi(0.95f, 0.20f, 0.12f, 1.0f);
   ImGuiStyle &style = ImGui::GetStyle();
   ImGui::StyleColorsDark(&style);
-  style.WindowPadding = ImVec2(28, 22);
-  style.FramePadding = ImVec2(12, 12);
-  style.ItemSpacing = ImVec2(12, 10);
-  style.FrameRounding = 8.0f;
+  style.WindowPadding = ImVec2(30, 22);
+  style.FramePadding = ImVec2(12, 11);
+  style.ItemSpacing = ImVec2(12, 9);
+  style.FrameRounding = 2.0f;
+  style.TabRounding = 2.0f;
   style.WindowRounding = 0.0f;
   style.WindowBorderSize = 0.0f;
-  style.Colors[ImGuiCol_WindowBg] = ImVec4(0.06f, 0.06f, 0.08f, 0.96f);
-  style.Colors[ImGuiCol_Button] = ImVec4(0.20f, 0.22f, 0.27f, 1.0f);
-  style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.32f, 0.36f, 0.44f, 1.0f);
-  style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.95f, 0.55f, 0.15f, 1.0f);
-  style.Colors[ImGuiCol_Tab] = ImVec4(0.16f, 0.17f, 0.21f, 1.0f);
-  style.Colors[ImGuiCol_TabHovered] = ImVec4(0.32f, 0.36f, 0.44f, 1.0f);
-  style.Colors[ImGuiCol_TabActive] = ImVec4(0.85f, 0.45f, 0.10f, 1.0f);
+  style.FrameBorderSize = 1.0f;
+  style.Colors[ImGuiCol_Text] = cream;
+  style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.55f, 0.55f, 0.52f, 1.0f);
+  style.Colors[ImGuiCol_WindowBg] = haveFrame ? ImVec4(0, 0, 0, 0) : ImVec4(0.06f, 0.06f, 0.08f, 0.96f);
+  style.Colors[ImGuiCol_Border] = ImVec4(0.55f, 0.57f, 0.60f, 0.55f);
+  style.Colors[ImGuiCol_Button] = ImVec4(0.13f, 0.14f, 0.16f, 0.92f);
+  style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.30f, 0.32f, 0.36f, 0.95f);
+  style.Colors[ImGuiCol_ButtonActive] = redHi;
+  style.Colors[ImGuiCol_Tab] = ImVec4(0.13f, 0.14f, 0.16f, 0.92f);
+  style.Colors[ImGuiCol_TabHovered] = ImVec4(0.30f, 0.32f, 0.36f, 0.95f);
+  style.Colors[ImGuiCol_TabSelected] = red;
+  style.Colors[ImGuiCol_TabSelectedOverline] = redHi;
+  style.Colors[ImGuiCol_Separator] = ImVec4(0.55f, 0.57f, 0.60f, 0.6f);
 
   const bool ok = ImGui_ImplOpenGL3_Init("#version 330");
 
   glGenTextures(1, &m_tex);
   glBindTexture(GL_TEXTURE_2D, m_tex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, Width, Height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_w, m_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  if (haveFrame)
+  {
+    glGenTextures(1, &m_frameTex);
+    glBindTexture(GL_TEXTURE_2D, m_frameTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, fw, fh, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  }
   glBindTexture(GL_TEXTURE_2D, 0);
   glGenFramebuffers(1, &m_fbo);
   glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
@@ -151,7 +276,8 @@ void VRMenu::Shutdown()
   }
   if (m_fbo) glDeleteFramebuffers(1, &m_fbo);
   if (m_tex) glDeleteTextures(1, &m_tex);
-  m_fbo = m_tex = 0;
+  if (m_frameTex) glDeleteTextures(1, &m_frameTex);
+  m_fbo = m_tex = m_frameTex = 0;
   m_ready = false;
 }
 
@@ -165,26 +291,36 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
   ImGui::SetCurrentContext((ImGuiContext *)m_ctx);
   ImGuiIO &io = ImGui::GetIO();
   io.DeltaTime = (float)std::clamp(dt, 1.0 / 240.0, 0.25);
-  io.DisplaySize = ImVec2((float)Width, (float)Height);
+  io.DisplaySize = ImVec2((float)m_w, (float)m_h);
   if (valid)
-    io.AddMousePosEvent(pointerU * Width, pointerV * Height);
+    io.AddMousePosEvent(pointerU * m_w, pointerV * m_h);
   else
     io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
   io.AddMouseButtonEvent(0, valid && press);
 
   ImGui_ImplOpenGL3_NewFrame();
   ImGui::NewFrame();
-  ImGui::SetNextWindowPos(ImVec2(0, 0));
-  ImGui::SetNextWindowSize(ImVec2((float)Width, (float)Height));
+  if (m_frameTex)
+  {
+    // the artwork, and a dark glass over its inner rectangle so the options read clearly
+    ImDrawList *bg = ImGui::GetBackgroundDrawList();
+    bg->AddImage(ImTextureRef((ImTextureID)(intptr_t)m_frameTex), ImVec2(0, 0), ImVec2((float)m_w, (float)m_h));
+    bg->AddRectFilled(ImVec2(m_inner[0], m_inner[1]), ImVec2(m_inner[2], m_inner[3]), IM_COL32(6, 7, 9, 200));
+  }
+  ImGui::SetNextWindowPos(ImVec2(m_inner[0], m_inner[1]));
+  ImGui::SetNextWindowSize(ImVec2(m_inner[2] - m_inner[0], m_inner[3] - m_inner[1]));
   ImGui::Begin("L.A. Machineguns VR", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse);
+               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
 
-  ImGui::TextUnformatted("L.A. MACHINEGUNS VR - OPTIONS");
-  ImGui::Separator();
+  if (!m_frameTex)
+  {
+    ImGui::TextUnformatted("L.A. MACHINEGUNS VR - OPTIONS");
+    ImGui::Separator();
+  }
 
   if (ImGui::BeginTabBar("tabs"))
   {
-    if (ImGui::BeginTabItem("  Comfort  "))
+    if (ImGui::BeginTabItem("  COMFORT  "))
     {
       static const char *const kVignette[] = { "Off", "Light", "Medium", "Strong" };
       r.changed |= Choice("Vignette during fast camera turns", &s.vignette, kVignette, 4);
@@ -198,7 +334,7 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
       ImGui::EndDisabled();
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("  Gun  "))
+    if (ImGui::BeginTabItem("  GUN  "))
     {
       static const char *const kHand[] = { "Either (last fired)", "Right", "Left" };
       r.changed |= Choice("Gun hand", &s.gunHand, kHand, 3);
@@ -208,7 +344,7 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
       r.changed |= Stepper("Aim fine-tune: down / up", &s.aimNudgeY, 0.1f, -3.0f, 3.0f, "%+.1f deg");
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("  Screen  "))
+    if (ImGui::BeginTabItem("  SCREEN  "))
     {
       static const char *const kLock[] = { "Fixed", "Follow head", "Auto" };
       int lock = s.hudLock == 0 ? 0 : (s.hudLock == 1 ? 1 : 2);
@@ -228,16 +364,16 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
   }
 
   // Bottom row
-  const float rowY = (float)Height - ImGui::GetFrameHeightWithSpacing() - ImGui::GetStyle().WindowPadding.y;
+  const float rowY = (m_inner[3] - m_inner[1]) - ImGui::GetFrameHeightWithSpacing() - ImGui::GetStyle().WindowPadding.y;
   ImGui::SetCursorPosY(rowY);
   const float bw = (ImGui::GetContentRegionAvail().x - 2 * ImGui::GetStyle().ItemSpacing.x) / 3.0f;
-  if (ImGui::Button("Resume", ImVec2(bw, 0)))
+  if (ImGui::Button("RESUME", ImVec2(bw, 0)))
     r.resume = true;
   ImGui::SameLine();
-  if (ImGui::Button("Re-centre view", ImVec2(bw, 0)))
+  if (ImGui::Button("RE-CENTRE", ImVec2(bw, 0)))
     r.recenter = true;
   ImGui::SameLine();
-  if (ImGui::Button("Quit game", ImVec2(bw, 0)))
+  if (ImGui::Button("QUIT GAME", ImVec2(bw, 0)))
     r.quit = true;
 
   ImGui::End();
@@ -248,9 +384,12 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
   glGetIntegerv(GL_VIEWPORT, viewport);
   const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
   glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-  glViewport(0, 0, Width, Height);
+  glViewport(0, 0, m_w, m_h);
   glDisable(GL_SCISSOR_TEST);
-  glClearColor(0.06f, 0.06f, 0.08f, 1.0f);
+  if (m_frameTex)
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);   // see-through around the artwork
+  else
+    glClearColor(0.06f, 0.06f, 0.08f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
   glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFbo);

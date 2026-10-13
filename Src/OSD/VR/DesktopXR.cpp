@@ -164,6 +164,7 @@ vec4 scale2x(ivec2 t2, ivec2 size) {
 void main() {
   if (uMode == 0) { fragColor = vec4(texture(uTex, vUv).rgb, 1.0); return; }
   if (uMode == 3) { fragColor = vec4(texture(uTex, vec2(vUv.x, 1.0 - vUv.y)).rgb, 1.0); return; }
+  if (uMode == 4) { fragColor = texture(uTex, vec2(vUv.x, 1.0 - vUv.y)); return; }   // premultiplied, flipped
   if (uMode == 2) {
     // flat-rendered small viewports (GL texture, bottom-up); already alpha-weighted
     vec4 c = texture(uTex, vec2(mix(uSubUv.x, uSubUv.z, vUv.x), mix(uSubUv.w, uSubUv.y, vUv.y)));
@@ -861,9 +862,11 @@ bool DesktopXR::PollEvents()
   return !m_exitRequested;
 }
 
-void DesktopXR::SetMenu(GLuint tex, bool open)
+void DesktopXR::SetMenu(GLuint tex, bool open, float aspect)
 {
   m_menuTex = tex;
+  kMenuWidth = 1.30f;
+  kMenuHeight = kMenuWidth * std::clamp(aspect, 0.3f, 1.5f);
   if (open && !m_menuOpen) {
     // place the panel ~1.4 m in front of the head, level, facing the player
     const XrVector3f f = Rotate(m_headPose.orientation, {0.f, 0.f, -1.f});
@@ -906,17 +909,20 @@ void DesktopXR::DrawMenuInEye(const New3D::VREye& eye)
   glDisable(GL_SCISSOR_TEST);
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_CULL_FACE);
-  glDisable(GL_BLEND);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   // the menu image is premultiplied, see-through around the artwork
   glBindVertexArray(m_vao);
   glUseProgram(m_quadProgram);
   glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, mvp);
   glUniform4f(m_uRect, -0.5f * kMenuWidth, 0.5f * kMenuWidth, 0.5f * kMenuHeight, -0.5f * kMenuHeight);
-  glUniform1i(m_uMode, 3);
+  glUniform1i(m_uMode, 4);
   glActiveTexture(GL_TEXTURE0);
   glUniform1i(m_uTex, 0);
   glBindTexture(GL_TEXTURE_2D, m_menuTex);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   glBindTexture(GL_TEXTURE_2D, 0);
+  glDisable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
   // pointer rays from both controllers (to the panel, or 2 m)
   float pv[16], pmvp[16];

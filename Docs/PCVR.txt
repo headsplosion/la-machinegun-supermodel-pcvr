@@ -57,6 +57,8 @@ Options menu (left controller's menu button)
            Hide player 2 PRESS START, hit static over the whole view.
            Render resolution - 0.5x to 1.5x of the headset's own; applies on the next start.
   Changes are saved to Config/Supermodel.ini straight away.
+  Look: the menu uses Assets/VRMenuFont.ttf (Michroma, SIL Open Font License). It can also be
+  framed by your own artwork - see Assets/VR-MENU.txt.
 
 Settings (Config/Supermodel.ini, [ Global ])
   VRResolutionScale     1.0 = headset's recommended eye size; raise for sharper image
