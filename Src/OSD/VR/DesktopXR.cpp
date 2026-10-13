@@ -754,9 +754,11 @@ void DesktopXR::Shutdown()
   m_lineProgram = 0;
   if (m_vignetteProgram) glDeleteProgram(m_vignetteProgram);
   m_vignetteProgram = 0;
-  if (m_cinemaFbo) glDeleteFramebuffers(1, &m_cinemaFbo);
-  if (m_cinemaTex) glDeleteTextures(1, &m_cinemaTex);
-  m_cinemaFbo = m_cinemaTex = 0;
+  for (int v = 0; v < 2; v++) {
+    if (m_cinemaFbo[v]) glDeleteFramebuffers(1, &m_cinemaFbo[v]);
+    if (m_cinemaTex[v]) glDeleteTextures(1, &m_cinemaTex[v]);
+    m_cinemaFbo[v] = m_cinemaTex[v] = 0;
+  }
   if (m_staticFbo) glDeleteFramebuffers(1, &m_staticFbo);
   if (m_staticTex) glDeleteTextures(1, &m_staticTex);
   if (m_staticProgram) glDeleteProgram(m_staticProgram);
@@ -1123,6 +1125,12 @@ bool DesktopXR::BeginFrame()
       (head.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
     m_headPose = head.pose;
 
+  if (m_viewsValid) {
+    const XrVector3f a = m_views[0].pose.position, b = m_views[1].pose.position;
+    const float d = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+    if (d > 0.04f && d < 0.09f)
+      m_ipd = d;
+  }
   UpdateComfort();
   return m_viewsValid;
 }
@@ -1167,10 +1175,17 @@ void DesktopXR::DrawVignette(const New3D::VREye& eye)
 
 // ---- Cinema mode: the game drawn flat into a texture, shown on a big screen in a dark room
 
-bool DesktopXR::BeginFlat(New3D::VREye& t)
+int DesktopXR::FlatViewCount() const
 {
-  if (!m_config.cinema)
+  return (m_config.cinema && m_config.cinemaDepth > 0) ? 2 : 1;
+}
+
+bool DesktopXR::BeginFlat(int view, New3D::VREye& t)
+{
+  if (!m_config.cinema || view < 0 || view > 1)
     return false;
+  GLuint& m_cinemaTex = this->m_cinemaTex[view];
+  GLuint& m_cinemaFbo = this->m_cinemaFbo[view];
   if (!m_cinemaFbo) {
     glGenTextures(1, &m_cinemaTex);
     glBindTexture(GL_TEXTURE_2D, m_cinemaTex);
@@ -1216,13 +1231,33 @@ bool DesktopXR::BeginFlat(New3D::VREye& t)
   t.fbo = m_cinemaFbo;
   t.width = kCinemaW;
   t.height = kCinemaH;
+  if (FlatViewCount() == 2) {
+    // 3D cinema: two views of the game's camera, half an eye distance to each side, with
+    // off-axis frustums meeting at the convergence depth. The disparity of far scenery matches
+    // the real distance to things behind the screen (Full), or half of it (Shallow).
+    const float depth = m_config.cinemaDepth == 1 ? 0.5f : 1.0f;
+    const float e = 0.5f * m_ipd * m_config.worldUnitsPerMeter;          // half eye distance, world units
+    const float farDisparity = depth * m_ipd / (kCinemaDistance * CinemaScale());   // tangent units
+    const float conv = 2.f * e / std::max(farDisparity, 1e-4f);          // depth on the screen surface
+    const float shift = (view == 0 ? 1.f : -1.f) * e / conv;             // left eye looks right of centre
+    t.stereo = true;
+    t.convergence = conv;
+    t.tanLeft = m_gameL + shift;
+    t.tanRight = m_gameR + shift;
+    t.tanUp = m_gameT;
+    t.tanDown = m_gameB;
+    for (int i = 0; i < 16; i++) t.view[i] = (i % 5 == 0) ? 1.f : 0.f;
+    t.view[12] = (view == 0 ? 1.f : -1.f) * e;                           // left eye sits at -e
+  }
   return true;
 }
 
-void DesktopXR::EndFlat()
+void DesktopXR::EndFlat(int view)
 {
+  if (view < 0 || view > 1 || !m_cinemaFbo[view])
+    return;
   // top 2D layer (score, text, crosshair) over the 3D scene
-  glBindFramebuffer(GL_FRAMEBUFFER, m_cinemaFbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, m_cinemaFbo[view]);
   glViewport(0, 0, kCinemaW, kCinemaH);
   glDisable(GL_SCISSOR_TEST);
   glDisable(GL_DEPTH_TEST);
@@ -1252,7 +1287,9 @@ void DesktopXR::EndFlat()
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   }
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
-  m_cinemaValid = true;
+  m_cinemaValid[view] = true;
+  if (FlatViewCount() == 1)
+    m_cinemaValid[1] = false;
 }
 
 float DesktopXR::CinemaScale() const
@@ -1263,7 +1300,9 @@ float DesktopXR::CinemaScale() const
 
 void DesktopXR::DrawCinemaInEye(const New3D::VREye& eye)
 {
-  if (!m_cinemaValid)
+  // 3D cinema: each eye its own view; otherwise both eyes the same picture
+  const int v = (FlatViewCount() == 2 && m_cinemaValid[1] && &eye == &m_curEye[1]) ? 1 : 0;
+  if (!m_cinemaValid[v])
     return;
   float proj[16];
   EyeProjection(eye, proj);
@@ -1285,7 +1324,7 @@ void DesktopXR::DrawCinemaInEye(const New3D::VREye& eye)
   glUniform1i(m_uMode, 3);
   glActiveTexture(GL_TEXTURE0);
   glUniform1i(m_uTex, 0);
-  glBindTexture(GL_TEXTURE_2D, m_cinemaTex);
+  glBindTexture(GL_TEXTURE_2D, m_cinemaTex[v]);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   glBindTexture(GL_TEXTURE_2D, 0);
   glBindVertexArray(0);

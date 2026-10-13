@@ -433,6 +433,14 @@ void R3DShader::SetModelStates(const Model* model)
 		if (m_vrRemapOn) {
 			float remapped[16];
 			VRMul4(m_vrRemap, model->modelMat, remapped);
+			if (m_vrEye->stereo && m_vrEye->convergence > 0.f && remapped[14] < -1e-3f) {
+				// 3D cinema: overlay viewports (the crosshair) go onto the screen surface - scaled
+				// about the camera, so they keep their place on the screen and get no disparity.
+				const float k = m_vrEye->convergence / -remapped[14];
+				for (int i = 0; i < 16; i++) {
+					if ((i & 3) != 3) remapped[i] *= k;
+				}
+			}
 			VRMul4(m_vrEye->view, remapped, eyeModel);
 		}
 		else {

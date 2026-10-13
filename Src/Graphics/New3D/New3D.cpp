@@ -810,52 +810,70 @@ void CNew3D::MeasureCameraTurn()
 
 void CNew3D::DrawVRFlat(IVRFrameTarget* vr)
 {
-	// Cinema mode: the game drawn once, flat (as on a monitor), into the target's texture.
-	VREye t;
-	if (!vr->BeginFlat(t)) {
-		return;
-	}
-	if (t.width != m_vrFbWidth || t.height != m_vrFbHeight) {
-		m_vrFrameBuffers.DestroyFBO();
-		if (m_vrFrameBuffers.CreateFBO(t.width, t.height) != Result::OKAY) {
-			m_vrFbWidth = m_vrFbHeight = 0;
-			vr->EndFlat();
-			return;
+	// Cinema mode: the game drawn as on a monitor into the target's texture - once (flat), or
+	// once per eye with a small sideways offset (3D cinema).
+	const int views = vr->FlatViewCount();
+	for (int v = 0; v < views; v++) {
+		VREye t;
+		if (!vr->BeginFlat(v, t)) {
+			continue;
 		}
-		m_vrFbWidth = t.width;
-		m_vrFbHeight = t.height;
+		if (t.width != m_vrFbWidth || t.height != m_vrFbHeight) {
+			m_vrFrameBuffers.DestroyFBO();
+			if (m_vrFrameBuffers.CreateFBO(t.width, t.height) != Result::OKAY) {
+				m_vrFbWidth = m_vrFbHeight = 0;
+				vr->EndFlat(v);
+				continue;
+			}
+			m_vrFbWidth = t.width;
+			m_vrFbHeight = t.height;
+		}
+		const float	xRatio = m_xRatio, yRatio = m_yRatio;
+		const unsigned	xOffs = m_xOffs, yOffs = m_yOffs, totalX = m_totalXRes, totalY = m_totalYRes;
+		m_xRatio	= t.width * (float)(1.0 / 496.0);
+		m_yRatio	= t.height * (float)(1.0 / 384.0);
+		m_xOffs		= 0;
+		m_yOffs		= 0;
+		m_totalXRes	= t.width;
+		m_totalYRes	= t.height;
+		std::vector<std::array<float, 4>> spots;
+		spots.reserve(m_nodes.size());
+		for (auto& n : m_nodes) {
+			float* sp = n.viewport.spotEllipse;
+			spots.push_back({ sp[0], sp[1], sp[2], sp[3] });
+			sp[0] = (sp[0] - (float)xOffs) / xRatio * m_xRatio;
+			sp[1] = (sp[1] - (float)yOffs) / yRatio * m_yRatio;
+			sp[2] = sp[2] / xRatio * m_xRatio;
+			sp[3] = sp[3] / yRatio * m_yRatio;
+		}
+		if (t.stereo) {
+			// The main view gets the off-axis frustum and eye offset; small viewports (menus)
+			// stay flat in their own rectangles.
+			float l, r, tp, bt;
+			if (GetMainViewportTangents(l, r, tp, bt)) {
+				m_r3dShader.SetVRReference(true, l, r, tp, bt);
+			}
+			m_vrEye = &t;
+			m_r3dShader.SetVREye(&t);
+		}
+		DrawScene(m_vrFrameBuffers, false, t.fbo);
+		if (t.stereo) {
+			m_r3dShader.SetVREye(nullptr);
+			m_vrEye = nullptr;
+		}
+		size_t i = 0;
+		for (auto& n : m_nodes) {
+			float* sp = n.viewport.spotEllipse;
+			for (int k = 0; k < 4; k++) sp[k] = spots[i][k];
+			i++;
+		}
+		m_xRatio = xRatio; m_yRatio = yRatio; m_xOffs = xOffs; m_yOffs = yOffs;
+		m_totalXRes = totalX; m_totalYRes = totalY;
+		vr->EndFlat(v);
 	}
-	const float	xRatio = m_xRatio, yRatio = m_yRatio;
-	const unsigned	xOffs = m_xOffs, yOffs = m_yOffs, totalX = m_totalXRes, totalY = m_totalYRes;
-	m_xRatio	= t.width * (float)(1.0 / 496.0);
-	m_yRatio	= t.height * (float)(1.0 / 384.0);
-	m_xOffs		= 0;
-	m_yOffs		= 0;
-	m_totalXRes	= t.width;
-	m_totalYRes	= t.height;
-	std::vector<std::array<float, 4>> spots;
-	spots.reserve(m_nodes.size());
-	for (auto& n : m_nodes) {
-		float* sp = n.viewport.spotEllipse;
-		spots.push_back({ sp[0], sp[1], sp[2], sp[3] });
-		sp[0] = (sp[0] - (float)xOffs) / xRatio * m_xRatio;
-		sp[1] = (sp[1] - (float)yOffs) / yRatio * m_yRatio;
-		sp[2] = sp[2] / xRatio * m_xRatio;
-		sp[3] = sp[3] / yRatio * m_yRatio;
-	}
-	DrawScene(m_vrFrameBuffers, false, t.fbo);
-	size_t i = 0;
-	for (auto& n : m_nodes) {
-		float* sp = n.viewport.spotEllipse;
-		for (int k = 0; k < 4; k++) sp[k] = spots[i][k];
-		i++;
-	}
-	m_xRatio = xRatio; m_yRatio = yRatio; m_xOffs = xOffs; m_yOffs = yOffs;
-	m_totalXRes = totalX; m_totalYRes = totalY;
 	for (auto& n : m_nodes) {
 		CalcViewport(&n.viewport);
 	}
-	vr->EndFlat();
 }
 
 void CNew3D::DrawEyes(bool newFrame)

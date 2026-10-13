@@ -46,7 +46,8 @@ Options menu (left controller's menu button)
   Comfort  Vignette - darkens the edges of your view while the game's camera turns fast
                       (Off / Light / Medium / Strong); the best help against motion sickness.
            Cinema mode - the game on a big screen in a dark room: no camera motion around you
-                      at all (and no 3D depth). Small / Medium / Large screen.
+                      at all. Small / Medium / Large screen, and 3D depth: Flat / Shallow /
+                      Full - like a 3D TV, the game's world sits behind the screen.
   Gun      Gun hand - Either (the hand that last fired) / Right / Left.
            Recoil vibration - Off / Light / Strong.
            Aim fine-tune - nudge the aim left/right and up/down in 0.1 degree steps, if the
@@ -79,7 +80,8 @@ Settings (Config/Supermodel.ini, [ Global ])
   VRStaticFill          1 = when you're hit, the game's flickering "static" fills your whole
                         view instead of only the original 4:3 screen
   VRVignette            0-3 comfort vignette (see the options menu)
-  VRCinema, VRCinemaSize  cinema mode on/off, screen size 0-2
+  VRCinema, VRCinemaSize, VRCinemaDepth
+                        cinema mode on/off, screen size 0-2, 3D depth 0 flat / 1 shallow / 2 full
   VRGunHand             0 = either, 1 = right, 2 = left
   VRRecoil              0 = off, 1 = light, 2 = strong
   VRAimNudgeX/Y         aim fine-tune in degrees

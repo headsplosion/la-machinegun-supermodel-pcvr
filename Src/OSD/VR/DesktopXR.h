@@ -79,6 +79,7 @@ public:
     float aimNudgeY          = 0.f;
     bool  cinema             = false;  // cinema mode: the flat game on a big screen
     int   cinemaSize         = 1;      // 0 small, 1 medium, 2 large
+    int   cinemaDepth        = 2;      // 3D in cinema mode: 0 off (flat), 1 shallow, 2 full
   };
 
   ~DesktopXR();
@@ -138,8 +139,9 @@ public:
   void  EndEye(int eye) override;
   float CullTangent() const override { return 100.f; }
   void  SetScreen(const New3D::VRScreenInfo& info) override;
-  bool  BeginFlat(New3D::VREye& outTarget) override;
-  void  EndFlat() override;
+  int   FlatViewCount() const override;
+  bool  BeginFlat(int view, New3D::VREye& outTarget) override;
+  void  EndFlat(int view) override;
   bool  WantsFlat() const override { return m_config.cinema; }
 
   // 2D top layer texture (496x384, rows top-first) and HUD options, for the in-eye HUD.
@@ -268,8 +270,9 @@ private:
   float  m_vignette = 0.f;     // current vignette amount 0..1
   static constexpr int   kCinemaW = 1488, kCinemaH = 1152;
   static constexpr float kCinemaDistance = 4.0f;   // metres
-  GLuint m_cinemaTex = 0, m_cinemaFbo = 0;
-  bool   m_cinemaValid = false;
+  GLuint m_cinemaTex[2] = {0, 0}, m_cinemaFbo[2] = {0, 0};   // one per eye in 3D cinema
+  bool   m_cinemaValid[2] = {false, false};
+  float  m_ipd = 0.064f;   // eye distance from the headset (metres)
   GLuint m_lineProgram = 0;
   GLint  m_uLineMvp = -1, m_uLineA = -1, m_uLineB = -1, m_uLineColor = -1;
 

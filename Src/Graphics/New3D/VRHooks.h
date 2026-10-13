@@ -24,6 +24,9 @@ struct VREye
 	float tanUp		=  1.f;
 	float tanDown	= -1.f;
 
+	bool  stereo		= false;		// flat target drawn as one view of a stereo pair (3D cinema)
+	float convergence	= 0.f;			// 3D cinema: depth that sits on the screen surface
+
 	// Column-major 4x4: inverse of the eye pose relative to the recentred origin,
 	// translation already converted from metres to Model 3 world units.
 	float view[16]	= { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
@@ -65,8 +68,12 @@ public:
 
 	// Cinema mode: return true and a render target to get the game drawn flat (as on a monitor)
 	// into it instead of once per eye; the eyes are then composed by the target itself.
-	virtual bool BeginFlat(VREye& outTarget) { (void)outTarget; return false; }
-	virtual void EndFlat() {}
+	// view: 0..FlatViewCount()-1. With 2 views (3D cinema), outTarget also carries the view's
+	// off-axis frustum and eye offset (stereo = true), and convergence = depth (world units)
+	// that lands on the screen surface.
+	virtual int  FlatViewCount() const { return 1; }
+	virtual bool BeginFlat(int view, VREye& outTarget) { (void)view; (void)outTarget; return false; }
+	virtual void EndFlat(int view) { (void)view; }
 	virtual bool WantsFlat() const { return false; }
 
 	// Half-angle tangent used to widen renderer-side culling while VR is active.
