@@ -22,7 +22,7 @@ Developed and tested on a Meta Quest 3 streamed with **Virtual Desktop** (VDXR r
 
 | Controller | Action |
 |---|---|
-| Trigger (either hand) | Fire. The hand you fire with becomes the gun. |
+| Trigger (either hand) | Fire. The hand you fire with becomes the gun. With *Gun hand: Both* in the options menu, you get a gun in each hand. |
 | A or Y | Start |
 | B or X | Coin |
 | Left menu button | Options menu (comfort, gun, screen) |

@@ -86,12 +86,4 @@ jobs:
           name: L.A. Machineguns PC VR ${{ steps.ver.outputs.tag }}
           files: pkg/SupermodelVR-windows.zip
           make_latest: true
-          body: |
-            Windows build of Supermodel with the OpenXR VR mode, set up for L.A. Machineguns.
-
-            **Download** `SupermodelVR-windows.zip` below, unzip it, put your own `lamachin.zip`
-            ROM set in the `ROMs` folder, connect the headset (Virtual Desktop / Quest Link /
-            SteamVR as the active OpenXR runtime) and run `Play LA Machineguns VR.bat`.
-            Full instructions are in `README-VR.txt` inside the zip and in the README.
-
-            No ROMs or other game files are included.
+          body_path: RELEASE_NOTES.md
