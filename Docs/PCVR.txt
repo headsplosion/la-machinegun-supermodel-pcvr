@@ -60,6 +60,8 @@ Settings (Config/Supermodel.ini, [ Global ])
                         head; 0 = always fixed in the room
   VRHideP2Prompt        1 = hide player 2's "PRESS START BUTTON" in the bottom-right corner
                         during play (it keeps flashing in single-player games)
+  VRStaticFill          1 = when you're hit, the game's flickering "static" fills your whole
+                        view instead of only the original 4:3 screen
   VRHudLayer            0 = draw score/crosshair into the 3D image (exact alignment);
                         1 = use a separate compositor layer (sharper text, may drift)
   VRGunCalibration      1 = set the wide gun calibration in the game (see below)

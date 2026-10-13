@@ -65,6 +65,7 @@ public:
                                        // 1 = follows the head, 2 = follows the head while the
                                        // game shows 3D (play, cutscenes), fixed for 2D menus
     bool  hideP2Prompt       = true;   // leave out player 2's "PRESS START BUTTON" during play
+    bool  staticFill         = true;   // extend the game's hit "static" over the whole view
   };
 
   ~DesktopXR();
@@ -155,6 +156,7 @@ private:
   void ComputeEye(int eye, New3D::VREye& out) const;
   void DrawBackdrop(const New3D::VREye& eye);
   void DrawHudInEye(const New3D::VREye& eye);
+  void DrawStaticFill(const New3D::VREye& eye, const float panelMvp[16]);
   void HandleSessionState(XrSessionState state);
   void RecreateLocalSpace(const XrPosef& origin);
   void StartWaitThread();
@@ -227,6 +229,9 @@ private:
   GLuint m_dotProgram = 0;      // pointer dots on the HUD
   GLint  m_uDotCenter = -1, m_uDotRadius = -1, m_uDotColor = -1, m_uDotAspect = -1;
   GLuint m_vao = 0;
+  GLuint m_staticDetectProgram = 0, m_staticProgram = 0, m_staticTex = 0, m_staticFbo = 0;
+  GLint  m_uStaticMvp = -1, m_uStaticRect = -1, m_uStaticGame = -1, m_uStaticAmount = -1, m_uStaticSeed = -1;
+  XrTime m_staticMeasuredFrame = 0;
 };
 
 #endif

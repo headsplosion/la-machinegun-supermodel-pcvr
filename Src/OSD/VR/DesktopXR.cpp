@@ -556,6 +556,74 @@ bool DesktopXR::CreateActions()
   return Check(xrAttachSessionActionSets(m_session, &attach), "xrAttachSessionActionSets");
 }
 
+// Hit "static" outside the game's screen. The game draws its static (noise over the picture)
+// on the 2D layer, so it covers only the 4:3 screen. A 1x1 pass measures how much of the layer
+// is noise right now; the fill pass then draws matching noise around the screen.
+const char* kFullVS = R"(#version 330 core
+void main() {
+  vec2 p = vec2((gl_VertexID & 1) != 0 ? 1.0 : -1.0, (gl_VertexID & 2) != 0 ? 1.0 : -1.0);
+  gl_Position = vec4(p, 0.0, 1.0);
+})";
+
+const char* kStaticDetectFS = R"(#version 330 core
+// The 2D layer's pixels are either solid or see-through, so the game's static is a fine scatter
+// of solid grey pixels. Measure how often neighbouring pixels flip between solid and clear
+// (high for static, low for text and the HUD) and the share of solid pixels (its density),
+// below the score/timer rows.
+uniform sampler2D uTex;
+out vec4 fragColor;
+void main() {
+  ivec2 size = textureSize(uTex, 0);
+  float flips = 0.0, solid = 0.0, total = 0.0;
+  for (int y = 52; y < size.y - 2; y += 6)
+    for (int x = 3; x < size.x - 2; x += 6) {
+      float a  = step(0.5, texelFetch(uTex, ivec2(x, y), 0).a);
+      float ax = step(0.5, texelFetch(uTex, ivec2(x + 1, y), 0).a);
+      float ay = step(0.5, texelFetch(uTex, ivec2(x, y + 1), 0).a);
+      total += 1.0;
+      solid += a;
+      flips += abs(a - ax) + abs(a - ay);
+    }
+  float busy = flips / max(2.0 * total, 1.0);
+  fragColor = vec4(smoothstep(0.12, 0.28, busy), solid / max(total, 1.0), 0.0, 1.0);
+})";
+
+// Noise on the plane of the game's screen, outside it, with the game's pixel size.
+const char* kStaticVS = R"(#version 330 core
+uniform mat4 uMvp;
+uniform vec4 uRect;   // area to fill (left, right, top, bottom) on the screen plane
+out vec2 vPos;
+void main() {
+  int id = gl_VertexID;
+  bool left = (id == 0 || id == 2);
+  bool bottom = (id < 2);
+  vPos = vec2(left ? uRect.x : uRect.y, bottom ? uRect.w : uRect.z);
+  gl_Position = uMvp * vec4(vPos, -1.0, 1.0);
+})";
+
+const char* kStaticFS = R"(#version 330 core
+uniform vec4 uGame;          // the game's screen (left, right, top, bottom)
+uniform sampler2D uAmount;   // 1x1: r = how much static is on, g = its opacity
+uniform float uSeed;
+in vec2 vPos;
+out vec4 fragColor;
+float hash(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+void main() {
+  if (vPos.x > uGame.x && vPos.x < uGame.y && vPos.y < uGame.z && vPos.y > uGame.w) discard;
+  vec4 amount = texture(uAmount, vec2(0.5));   // r: static on (0..1), g: density of solid pixels
+  if (amount.r <= 0.01) discard;
+  vec2 texel = floor(vec2((vPos.x - uGame.x) / (uGame.y - uGame.x) * 496.0,
+                          (uGame.z - vPos.y) / (uGame.z - uGame.w) * 384.0));
+  // like the game: a scatter of solid grey pixels at the measured density, the rest clear
+  if (hash(vec3(texel, uSeed)) > amount.g * amount.r) discard;
+  float v = hash(vec3(texel.yx + 17.0, uSeed + 31.0));
+  fragColor = vec4(vec3(v), 1.0);
+})";
+
 bool DesktopXR::CreateShaders()
 {
   m_quadProgram = LinkProgram(kQuadVS, kQuadFS);
@@ -574,6 +642,28 @@ bool DesktopXR::CreateShaders()
   m_uDotColor  = glGetUniformLocation(m_dotProgram, "uColor");
   m_uDotAspect = glGetUniformLocation(m_dotProgram, "uAspect");
   glGenVertexArrays(1, &m_vao);
+
+  m_staticDetectProgram = LinkProgram(kFullVS, kStaticDetectFS);
+  m_staticProgram = LinkProgram(kStaticVS, kStaticFS);
+  if (m_staticDetectProgram && m_staticProgram) {
+    m_uStaticMvp    = glGetUniformLocation(m_staticProgram, "uMvp");
+    m_uStaticRect   = glGetUniformLocation(m_staticProgram, "uRect");
+    m_uStaticGame   = glGetUniformLocation(m_staticProgram, "uGame");
+    m_uStaticAmount = glGetUniformLocation(m_staticProgram, "uAmount");
+    m_uStaticSeed   = glGetUniformLocation(m_staticProgram, "uSeed");
+    glGenTextures(1, &m_staticTex);
+    glBindTexture(GL_TEXTURE_2D, m_staticTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glGenFramebuffers(1, &m_staticFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_staticFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_staticTex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
+  else
+    m_config.staticFill = false;   // optional effect: VR keeps working without it
   return true;
 }
 
@@ -583,6 +673,11 @@ void DesktopXR::Shutdown()
   StopWaitThread();
   if (New3D::GetVRFrameTarget() == this)
     New3D::SetVRFrameTarget(nullptr);
+  if (m_staticFbo) glDeleteFramebuffers(1, &m_staticFbo);
+  if (m_staticTex) glDeleteTextures(1, &m_staticTex);
+  if (m_staticProgram) glDeleteProgram(m_staticProgram);
+  if (m_staticDetectProgram) glDeleteProgram(m_staticDetectProgram);
+  m_staticFbo = m_staticTex = m_staticProgram = m_staticDetectProgram = 0;
   if (m_vao) glDeleteVertexArrays(1, &m_vao);
   if (m_quadProgram) glDeleteProgram(m_quadProgram);
   if (m_dotProgram) glDeleteProgram(m_dotProgram);
@@ -1002,7 +1097,13 @@ void DesktopXR::DrawHudInEye(const New3D::VREye& eye)
     glBindTexture(GL_TEXTURE_2D, (GLuint)m_screen.subTexture);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
   }
+  if (m_hudTopTex && m_config.staticFill && m_inPlay)
+    DrawStaticFill(eye, panelMvp);
+
   if (m_hudTopTex) {
+    glUseProgram(m_quadProgram);
+    glBindVertexArray(m_vao);
+    glActiveTexture(GL_TEXTURE0);
     glUniform1i(m_uMode, 1);
     glUniform2f(m_uKeep, (float)keepFirst / 384.f, (float)keepEnd / 384.f);
     // Player 2's "PRESS START BUTTON" / "INSERT COIN(S)" in the bottom-right corner during play
@@ -1056,6 +1157,43 @@ void DesktopXR::DrawHudInEye(const New3D::VREye& eye)
   glDisable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void DesktopXR::DrawStaticFill(const New3D::VREye& eye, const float panelMvp[16])
+{
+  // Measure the game's static once per headset frame (same 2D layer for both eyes).
+  const XrTime frameId = m_frameState.predictedDisplayTime;
+  if (frameId != m_staticMeasuredFrame) {
+    m_staticMeasuredFrame = frameId;
+    glBindFramebuffer(GL_FRAMEBUFFER, m_staticFbo);
+    glViewport(0, 0, 1, 1);
+    glDisable(GL_BLEND);
+    glUseProgram(m_staticDetectProgram);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, m_hudTopTex);
+    glUniform1i(glGetUniformLocation(m_staticDetectProgram, "uTex"), 0);
+    glBindVertexArray(m_vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, eye.fbo);
+    glViewport(0, 0, eye.width, eye.height);
+    glEnable(GL_BLEND);
+  }
+
+  // Noise around the screen, on the same plane and with the same pixel size; a new pattern
+  // every game frame (60 Hz), like the game's own.
+  const float w = m_gameR - m_gameL, h = m_gameT - m_gameB;
+  const float cx = 0.5f * (m_gameL + m_gameR), cy = 0.5f * (m_gameT + m_gameB);
+  glUseProgram(m_staticProgram);
+  glUniformMatrix4fv(m_uStaticMvp, 1, GL_FALSE, panelMvp);
+  glUniform4f(m_uStaticRect, cx - 2.5f * w, cx + 2.5f * w, cy + 2.5f * h, cy - 2.5f * h);
+  glUniform4f(m_uStaticGame, m_gameL, m_gameR, m_gameT, m_gameB);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, m_staticTex);
+  glUniform1i(m_uStaticAmount, 0);
+  glUniform1f(m_uStaticSeed, (float)((frameId / 16666667) % 997));
+  glBindVertexArray(m_vao);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void DesktopXR::SetGameFrustum(float left, float right, float top, float bottom)
