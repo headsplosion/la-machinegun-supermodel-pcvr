@@ -305,7 +305,7 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
     // the artwork, and a dark glass over its inner rectangle so the options read clearly
     ImDrawList *bg = ImGui::GetBackgroundDrawList();
     bg->AddImage(ImTextureRef((ImTextureID)(intptr_t)m_frameTex), ImVec2(0, 0), ImVec2((float)m_w, (float)m_h));
-    bg->AddRectFilled(ImVec2(m_inner[0], m_inner[1]), ImVec2(m_inner[2], m_inner[3]), IM_COL32(6, 7, 9, 200));
+    bg->AddRectFilled(ImVec2(m_inner[0], m_inner[1]), ImVec2(m_inner[2], m_inner[3]), IM_COL32(6, 7, 9, 150));
   }
   ImGui::SetNextWindowPos(ImVec2(m_inner[0], m_inner[1]));
   ImGui::SetNextWindowSize(ImVec2(m_inner[2] - m_inner[0], m_inner[3] - m_inner[1]));
