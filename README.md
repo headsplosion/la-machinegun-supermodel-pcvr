@@ -4,6 +4,19 @@
 
 Play Sega's 1998 light-gun arcade game **L.A. Machineguns: Rage of the Machines** in VR. This is a fork of the [Supermodel](https://github.com/trzy/Supermodel) Sega Model 3 emulator with an OpenXR mode. Your PC runs the emulator and streams it to the headset.
 
+## Features
+
+- **Stereo 3D with head tracking.** The game's 3D world is drawn around you, beyond the edges of the original 4:3 screen.
+- **The controller is the gun.** The game's own crosshair follows the controller and lands where the shots go, anywhere in the headset's view.
+- **Two guns at once.** Optional akimbo mode: one gun in each hand for a single player.
+- **Recoil.** The controller vibrates while you fire.
+- **Steady 60 fps.** The game runs at its real speed whatever the headset's refresh rate, and the headset never waits for the emulator.
+- **Cinema mode.** Play on a big screen in a dark room, flat or in 3D, with an optional glow: the picture's colours light up the room around the screen.
+- **Comfort options.** A vignette darkens the edges of your view during fast camera turns.
+- **Clean, readable overlay.** Score and text follow your head during play; menus and the title stay fixed in the room. The cutscene letterbox bars are removed, the hit "static" fills your whole view, and player 2's flashing PRESS START is hidden without touching the Japanese subtitles.
+- **In-headset options menu.** Every setting can be changed from the headset and is saved straight away.
+- **Fast start.** After the first run, the game opens on the SEGA logo; the long boot test is skipped.
+
 Developed and tested on a Meta Quest 3 streamed with **Virtual Desktop** (VDXR runtime). Meta Quest Link and SteamVR are standard OpenXR runtimes and should work too.
 
 > **No game files are included.** You need your own `lamachin.zip` ROM set, dumped from hardware you own. Please don't open issues or pull requests asking for ROMs.
@@ -22,13 +35,36 @@ Developed and tested on a Meta Quest 3 streamed with **Virtual Desktop** (VDXR r
 
 | Controller | Action |
 |---|---|
-| Trigger (either hand) | Fire. The hand you fire with becomes the gun. With *Gun hand: Both* in the options menu, you get a gun in each hand. |
+| Trigger | Fire. With *Gun hand: Either*, the hand you fire with becomes the gun. |
+| Both triggers | With *Gun hand: Both* (akimbo), each hand fires its own gun. |
 | A or Y | Start |
 | B or X | Coin |
-| Left menu button | Options menu (comfort, gun, screen) |
+| Left menu button | Open / close the options menu (the game pauses) |
 | Either stick click | Re-centre the view |
 | Left grip + left stick click | Operator (test) menu |
 | Esc (PC keyboard) | Quit |
+
+In the options menu, point at an option with either controller and pull the trigger.
+
+### Options menu
+
+| Tab | Option | Choices |
+|---|---|---|
+| **Comfort** | Vignette during fast camera turns | Off / Light / Medium / Strong |
+| | Cinema mode | Off / On: the game on a big screen in a dark room, no camera motion around you |
+| | Cinema screen size | Small / Medium / Large |
+| | Cinema 3D depth | Flat / Shallow / Full |
+| | Screen glow | Off / Subtle / Strong: the picture lights up the room around the cinema screen |
+| **Gun** | Gun hand | Either / Right / Left / Both (a gun in each hand) |
+| | Recoil vibration | Off / Light / Strong |
+| | Aim fine-tune | Nudge the aim left/right and up/down in 0.1° steps |
+| **Screen** | Score / timer / text | Fixed in the room / Follow head / Auto (head during play) |
+| | 2D graphics scaling | Soft / Sharp / Smooth edges |
+| | Hide player 2's PRESS START | On / Off |
+| | Hit static over the whole view | On / Off |
+| | Render resolution | 0.5× to 1.5× (applies on the next start) |
+
+The buttons at the bottom resume the game, re-centre the view or quit. Settings are saved to `Config/Supermodel.ini`. The menu's typeface is a bold version of [Michroma](https://github.com/googlefonts/Michroma-font) (SIL Open Font License); you can frame the menu with your own artwork, see `Assets/VR-MENU.txt`.
 
 For the smoothest play in Virtual Desktop, set Synchronous Spacewarp to **Disabled** and the frame rate to 72, 90 or 120 Hz. All VR settings are in `Config/Supermodel.ini`, documented in [`Docs/PCVR.txt`](Docs/PCVR.txt).
 
