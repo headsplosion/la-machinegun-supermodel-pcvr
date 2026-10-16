@@ -80,6 +80,7 @@ public:
     bool  cinema             = false;  // cinema mode: the flat game on a big screen
     int   cinemaSize         = 1;      // 0 small, 1 medium, 2 large
     int   cinemaDepth        = 2;      // 3D in cinema mode: 0 off (flat), 1 shallow, 2 full
+    int   cinemaGlow         = 1;      // light from the picture spilling around the cinema screen: 0 off, 1 subtle, 2 strong
   };
 
   ~DesktopXR();
@@ -257,7 +258,7 @@ private:
   int    m_playSwitchFrames = 0;
   New3D::VREye m_curEye[2];
   GLuint m_quadProgram = 0;     // textured quad (backdrop + HUD)
-  GLint  m_uMvp = -1, m_uTex = -1, m_uRect = -1, m_uMode = -1, m_uKeep = -1, m_uSubUv = -1;
+  GLint  m_uMvp = -1, m_uTex = -1, m_uRect = -1, m_uMode = -1, m_uKeep = -1, m_uSubUv = -1, m_uGlow = -1;
   GLuint m_dotProgram = 0;      // pointer dots on the HUD
   GLint  m_uDotCenter = -1, m_uDotRadius = -1, m_uDotColor = -1, m_uDotAspect = -1;
   GLuint m_vao = 0;

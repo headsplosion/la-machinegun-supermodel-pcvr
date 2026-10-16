@@ -343,6 +343,8 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
       r.changed |= Choice("Cinema screen size", &s.cinemaSize, kSize, 3);
       static const char *const kDepth[] = { "Flat", "Shallow", "Full" };
       r.changed |= Choice("Cinema 3D depth", &s.cinemaDepth, kDepth, 3);
+      static const char *const kGlow[] = { "Off", "Subtle", "Strong" };
+      r.changed |= Choice("Screen glow (the picture lights up its surroundings)", &s.cinemaGlow, kGlow, 3);
       ImGui::EndDisabled();
       ImGui::EndTabItem();
     }

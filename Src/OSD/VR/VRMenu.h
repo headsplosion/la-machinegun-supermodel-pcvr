@@ -15,6 +15,7 @@ struct VRSettings
   bool  cinema      = false;  // play on a big screen in a dark room
   int   cinemaSize  = 1;      // 0 small, 1 medium, 2 large
   int   cinemaDepth = 2;      // 3D depth in cinema mode: 0 off, 1 shallow, 2 full
+  int   cinemaGlow  = 1;      // light from the picture around the cinema screen: 0 off, 1 subtle, 2 strong
   int   hudLock     = 2;      // 2D layer: 0 room, 1 head, 2 head during play
   bool  hideP2      = true;   // hide player 2's PRESS START BUTTON during play
   bool  staticFill  = true;   // hit static over the whole view

@@ -135,6 +135,7 @@ uniform int uMode;
 uniform vec2 uKeep;   // HUD: v range of the 3D view; black outside it becomes see-through
 uniform vec4 uSubUv;  // mode 2: game area inside the small-viewport texture (u0, v0, u1, v1)
 uniform int uFilter;  // HUD: 0 soft, 1 sharp, 2 smooth edges
+uniform vec2 uGlow;   // mode 5: strength, screen width / height
 in vec2 vUv;
 out vec4 fragColor;
 // One texel of the HUD layer, premultiplied; letterbox black becomes fully transparent.
@@ -162,6 +163,24 @@ void main() {
   if (uMode == 0) { fragColor = vec4(texture(uTex, vUv).rgb, 1.0); return; }
   if (uMode == 3) { fragColor = vec4(texture(uTex, vec2(vUv.x, 1.0 - vUv.y)).rgb, 1.0); return; }
   if (uMode == 4) { fragColor = texture(uTex, vec2(vUv.x, 1.0 - vUv.y)); return; }   // premultiplied, flipped
+  if (uMode == 5) {
+    // Cinema screen glow: the picture's edge colours, heavily blurred (small mip levels),
+    // spilling onto the dark surround and fading with the distance from the screen edge.
+    // uSubUv = where the screen sits inside this bigger quad (u0, v0, u1, v1).
+    vec2 su = (vUv - uSubUv.xy) / (uSubUv.zw - uSubUv.xy);
+    vec2 e = clamp(su, 0.0, 1.0);
+    vec2 off = (su - e) * vec2(uGlow.y, 1.0);          // in screen heights
+    float dist = length(off);
+    if (dist <= 0.0) { fragColor = vec4(0.0); return; }
+    vec2 uv = vec2(e.x, 1.0 - e.y);
+    float lod = log2(float(textureSize(uTex, 0).y)) - 3.0;   // about 8 blocks per screen height
+    vec3 near = textureLod(uTex, uv, lod).rgb;
+    vec3 wide = textureLod(uTex, uv, lod + 1.5).rgb;
+    vec3 c = mix(near, wide, clamp(dist * 6.0, 0.0, 1.0));
+    float fall = exp(-dist * 7.5) * (1.0 - smoothstep(0.30, 0.42, dist));
+    fragColor = vec4(c * fall * uGlow.x, 0.0);        // added to what's behind
+    return;
+  }
   if (uMode == 2) {
     // flat-rendered small viewports (GL texture, bottom-up); already alpha-weighted
     vec4 c = texture(uTex, vec2(mix(uSubUv.x, uSubUv.z, vUv.x), mix(uSubUv.w, uSubUv.y, vUv.y)));
@@ -696,6 +715,7 @@ bool DesktopXR::CreateShaders()
   m_uKeep = glGetUniformLocation(m_quadProgram, "uKeep");
   m_uFilter = glGetUniformLocation(m_quadProgram, "uFilter");
   m_uSubUv = glGetUniformLocation(m_quadProgram, "uSubUv");
+  m_uGlow = glGetUniformLocation(m_quadProgram, "uGlow");
   m_uDotCenter = glGetUniformLocation(m_dotProgram, "uCenter");
   m_uDotRadius = glGetUniformLocation(m_dotProgram, "uRadius");
   m_uDotColor  = glGetUniformLocation(m_dotProgram, "uColor");
@@ -1192,7 +1212,8 @@ bool DesktopXR::BeginFlat(int view, New3D::VREye& t)
     glGenTextures(1, &m_cinemaTex);
     glBindTexture(GL_TEXTURE_2D, m_cinemaTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kCinemaW, kCinemaH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glGenerateMipmap(GL_TEXTURE_2D);   // small levels feed the screen glow
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -1285,6 +1306,9 @@ void DesktopXR::EndFlat(int view)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   }
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glBindTexture(GL_TEXTURE_2D, m_cinemaTex[view]);
+  glGenerateMipmap(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, 0);
   m_cinemaValid[view] = true;
   if (FlatViewCount() == 1)
     m_cinemaValid[1] = false;
@@ -1318,6 +1342,23 @@ void DesktopXR::DrawCinemaInEye(const New3D::VREye& eye)
   glBindVertexArray(m_vao);
   glUseProgram(m_quadProgram);
   glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, mvp);
+  if (m_config.cinemaGlow > 0) {
+    // the glow: a bigger quad around the screen, added onto the dark room
+    const float w = m_gameR - m_gameL, hgt = m_gameT - m_gameB, pad = 0.42f * hgt;
+    glUniform4f(m_uRect, m_gameL - pad, m_gameR + pad, m_gameT + pad, m_gameB - pad);
+    const float W = w + 2.f * pad, H = hgt + 2.f * pad;
+    glUniform4f(m_uSubUv, pad / W, pad / H, (pad + w) / W, (pad + hgt) / H);
+    glUniform2f(m_uGlow, m_config.cinemaGlow == 1 ? 0.5f : 1.0f, w / hgt);
+    glUniform1i(m_uMode, 5);
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(m_uTex, 0);
+    glBindTexture(GL_TEXTURE_2D, m_cinemaTex[v]);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  }
   glUniform4f(m_uRect, m_gameL, m_gameR, m_gameT, m_gameB);
   glUniform1i(m_uMode, 3);
   glActiveTexture(GL_TEXTURE0);
