@@ -190,6 +190,7 @@ bool VRMenu::Init(const std::string &assetDir)
   io.IniFilename = nullptr;   // no imgui.ini next to the game
   io.LogFilename = nullptr;
   io.DisplaySize = ImVec2((float)m_w, (float)m_h);
+  io.DisplayFramebufferScale = ImVec2((float)kSupersample, (float)kSupersample);   // fonts are rasterised at this density too
   const std::string fontPath = assetDir + "VRMenuFont.ttf";
   ImFont *font = nullptr;
   if (FileExists(fontPath))
@@ -234,8 +235,17 @@ bool VRMenu::Init(const std::string &assetDir)
 
   glGenTextures(1, &m_tex);
   glBindTexture(GL_TEXTURE_2D, m_tex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_w, m_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  // The menu is drawn at kSupersample x its layout size and mipmapped, so it stays sharp up close
+  // and doesn't shimmer when it covers fewer headset pixels than it has.
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_w * kSupersample, m_h * kSupersample, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  glGenerateMipmap(GL_TEXTURE_2D);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+  if (GLEW_EXT_texture_filter_anisotropic)
+  {
+    GLfloat maxAniso = 1.0f;
+    glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, std::min(8.0f, maxAniso));
+  }
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -244,7 +254,8 @@ bool VRMenu::Init(const std::string &assetDir)
     glGenTextures(1, &m_frameTex);
     glBindTexture(GL_TEXTURE_2D, m_frameTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, fw, fh, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -292,6 +303,7 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
   ImGuiIO &io = ImGui::GetIO();
   io.DeltaTime = (float)std::clamp(dt, 1.0 / 240.0, 0.25);
   io.DisplaySize = ImVec2((float)m_w, (float)m_h);
+  io.DisplayFramebufferScale = ImVec2((float)kSupersample, (float)kSupersample);   // fonts are rasterised at this density too
   if (valid)
     io.AddMousePosEvent(pointerU * m_w, pointerV * m_h);
   else
@@ -384,7 +396,7 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
   glGetIntegerv(GL_VIEWPORT, viewport);
   const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
   glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-  glViewport(0, 0, m_w, m_h);
+  glViewport(0, 0, m_w * kSupersample, m_h * kSupersample);
   glDisable(GL_SCISSOR_TEST);
   if (m_frameTex)
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);   // see-through around the artwork
@@ -392,6 +404,9 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
     glClearColor(0.06f, 0.06f, 0.08f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+  glBindTexture(GL_TEXTURE_2D, m_tex);
+  glGenerateMipmap(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, 0);
   glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFbo);
   glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
   if (scissor)

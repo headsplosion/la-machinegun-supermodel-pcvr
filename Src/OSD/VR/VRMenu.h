@@ -36,6 +36,7 @@ struct VRMenuResult
 class VRMenu
 {
 public:
+  static constexpr int kSupersample = 2;   // menu texture pixels per layout pixel
   ~VRMenu();
   // GL context must be current. assetDir: folder with the optional menu artwork
   // (VRMenuFrame.tga: a frame picture whose inner rectangle holds the options) and font

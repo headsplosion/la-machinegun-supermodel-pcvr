@@ -1,5 +1,8 @@
 Copyright 2011 The Michroma Project Authors (https://github.com/googlefonts/Michroma-font)
 
+VRMenuFont.ttf is a Modified Version of Michroma: the outlines were emboldened (FontForge,
+Change Weight +70 units) and the font renamed "Michroma Bold Synthetic". Same licence.
+
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
 https://scripts.sil.org/OFL
