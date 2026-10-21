@@ -637,33 +637,48 @@ void main() { vSu = uSu[gl_VertexID]; gl_Position = uMvp * vec4(uPos[gl_VertexID
 )";
 const char* kBezelFS = R"(#version 330 core
 uniform sampler2D uTex;
-uniform int uKind;        // 0 inner wall (reflective), 1 front of the frame
-uniform vec2 uAspect;     // screen width / height, bevel width in screen heights
-uniform float uLight;     // 0..1 how much the picture lights the frame
+uniform int uKind;        // 0 inner wall (reflective), 1 front of the cabinet
+uniform vec2 uAspect;     // screen width / height, recess depth (wall width) in screen heights
+uniform float uLight;     // 0..1 how much the picture lights the cabinet
 uniform float uShade;     // per wall: top walls catch less light than bottom ones
 in vec2 vSu;
 out vec4 fragColor;
 vec3 pic(vec2 su, float lod) { return textureLod(uTex, vec2(su.x, 1.0 - su.y), lod).rgb; }
+// a soft blur: several taps of a small mip level around a point
+vec3 soft(vec2 su, float lod, float r) {
+  vec3 c = vec3(0.0);
+  for (int i = 0; i < 8; i++) {
+    float a = float(i) * 0.785398;
+    c += pic(clamp(su + r * vec2(cos(a), sin(a) * uAspect.x), 0.0, 1.0), lod);
+  }
+  return (c + pic(su, lod) * 2.0) / 10.0;
+}
+float grain(vec2 p) { return fract(sin(dot(floor(p), vec2(12.9898, 78.233))) * 43758.5453); }
 void main() {
   vec2 e = clamp(vSu, 0.0, 1.0);
   vec2 off = (vSu - e) * vec2(uAspect.x, 1.0);
   float dist = length(off);                       // screen heights from the picture's edge
   float lodBase = log2(float(textureSize(uTex, 0).y));
-  vec3 plastic = vec3(0.034, 0.034, 0.037);
+  // TV-cabinet plastic: dark warm grey with a fine grain
+  vec3 plastic = vec3(0.060, 0.058, 0.056) * (0.92 + 0.16 * grain(vSu * vec2(900.0 * uAspect.x, 900.0)));
   if (uKind == 0) {
-    float w = clamp(dist / max(uAspect.y, 1e-4), 0.0, 1.0);   // 0 at the screen, 1 at the front
-    vec2 r = clamp(e - (vSu - e) * 1.15, 0.0, 1.0);          // mirrored across the edge
-    vec3 refl = pic(r, 0.5 + w * 3.5);                      // sharper near the screen, blurrier further out
-    vec3 lit  = pic(e, lodBase - 4.0);                      // soft light from the nearby picture
-    float k = 0.80 * pow(1.0 - w, 0.85) * uLight;
-    vec3 c = plastic + refl * k + lit * 0.05 * uLight;
+    float w = clamp(dist / max(uAspect.y, 1e-4), 0.0, 1.0);   // 0 at the screen, 1 at the cabinet front
+    vec2 r = clamp(e - (vSu - e) * 1.25, 0.0, 1.0);          // mirrored across the edge
+    // a hazy reflection, as on matte plastic: already soft at the screen, very soft further out
+    vec3 refl = soft(r, lodBase - 6.0 + w * 1.5, 0.010 + 0.035 * w);
+    vec3 lit  = pic(e, lodBase - 3.0);                       // diffuse light from the nearby picture
+    float k = 0.42 * pow(1.0 - w, 0.7) * uLight;
+    float ao = mix(0.55, 1.0, smoothstep(0.0, 0.25, w));     // darker in the crease next to the tube
+    vec3 c = (plastic + refl * k + lit * 0.10 * uLight * (1.0 - w)) * ao;
     c *= uShade;
-    c += vec3(0.010) * smoothstep(0.92, 1.0, w);            // a thin highlight on the front edge
+    // rounded lip where the recess meets the front: a soft highlight
+    c += vec3(0.030) * smoothstep(0.80, 1.0, w) * (1.0 - smoothstep(0.97, 1.0, w));
     fragColor = vec4(c, 1.0);
   } else {
-    vec3 lit = pic(e, lodBase - 3.0);
-    float k = exp(-dist * 8.0) * 0.14 * uLight;
-    fragColor = vec4(plastic * 0.8 + lit * k, 1.0);
+    vec3 lit = pic(e, lodBase - 2.0);
+    float k = exp(-dist * 7.0) * 0.16 * uLight;
+    float edge = 1.0 - 0.35 * smoothstep(0.75, 1.0, dist / max(uAspect.y * 1.8, 1e-4));   // falls off towards the outer edge
+    fragColor = vec4((plastic + lit * k) * edge, 1.0);
   }
 }
 )";
@@ -1441,8 +1456,8 @@ void DesktopXR::DrawCinemaBezel(const float* mvp, GLuint tex)
   // edge to the front of the frame, which sits a little nearer to the viewer.
   const float L = m_gameL, R = m_gameR, T = m_gameT, B = m_gameB;
   const float w = R - L, h = T - B;
-  const float bevel = 0.075f * h;        // width of the sloping inner walls
-  const float front = 0.045f * h;        // width of the flat front of the frame
+  const float bevel = 0.10f * h;         // width of the sloping inner walls (the recess)
+  const float front = 0.08f * h;         // width of the flat front of the cabinet
   const float k = CinemaScale();
   const float zf = -1.0f + bevel * k;    // walls at about 45 degrees (x, y carry the extra size factor k)
   const float bs = bevel / h, fs = (bevel + front) / h;          // in screen heights
