@@ -20,7 +20,7 @@ struct VRSettings
   int   hudLock     = 2;      // 2D layer: 0 room, 1 head, 2 head during play
   bool  hideP2      = true;   // hide player 2's PRESS START BUTTON during play
   bool  staticFill  = true;   // hit static over the whole view
-  bool  gunModel    = true;   // the game's own gun model in your hand
+  int   gunModel    = 1;      // gun model in your hand: 0 off, 1 the game's gun, 2 your own (Assets/VRGunModel.obj)
   int   recoil      = 1;      // controller vibration while firing: 0 off, 1 light, 2 strong
   float aimNudgeX   = 0.0f;   // aim fine-tune, degrees (+ = right)
   float aimNudgeY   = 0.0f;   // aim fine-tune, degrees (+ = up)

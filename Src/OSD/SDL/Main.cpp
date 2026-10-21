@@ -885,7 +885,7 @@ static void VRReadSettings()
   v.hudLock     = std::clamp(s_runtime_config["VRHudLock"].ValueAsDefault<int>(v.hudLock), 0, 2);
   v.hideP2      = s_runtime_config["VRHideP2Prompt"].ValueAsDefault<bool>(v.hideP2);
   v.staticFill  = s_runtime_config["VRStaticFill"].ValueAsDefault<bool>(v.staticFill);
-  v.gunModel    = s_runtime_config["VRGunModel"].ValueAsDefault<bool>(v.gunModel);
+  v.gunModel    = std::clamp(s_runtime_config["VRGunModel"].ValueAsDefault<int>(v.gunModel), 0, 2);
   v.recoil      = std::clamp(s_runtime_config["VRRecoil"].ValueAsDefault<int>(v.recoil), 0, 2);
   v.aimNudgeX   = std::clamp(s_runtime_config["VRAimNudgeX"].ValueAsDefault<float>(v.aimNudgeX), -3.0f, 3.0f);
   v.aimNudgeY   = std::clamp(s_runtime_config["VRAimNudgeY"].ValueAsDefault<float>(v.aimNudgeY), -3.0f, 3.0f);
@@ -924,7 +924,7 @@ static void VRSaveSettings()
     { "VRCinemaDepth", std::to_string(v.cinemaDepth) }, { "VRCinemaGlow", std::to_string(v.cinemaGlow) },
     { "VRCinemaBezel", std::to_string(v.cinemaBezel) },
     { "VRHudLock", std::to_string(v.hudLock) },     { "VRHideP2Prompt", v.hideP2 ? "1" : "0" },
-    { "VRGunModel", v.gunModel ? "1" : "0" },
+    { "VRGunModel", std::to_string(v.gunModel) },
     { "VRStaticFill", v.staticFill ? "1" : "0" },   { "VRRecoil", std::to_string(v.recoil) },
     { "VRAimNudgeX", f(v.aimNudgeX) },              { "VRAimNudgeY", f(v.aimNudgeY) },
     { "VRResolutionScale", f(v.renderScale) },      { "VRHudFilter", std::to_string(v.hudFilter) },
@@ -1449,6 +1449,13 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       VRApplySettings(*xr);
       if (!s_vrMenu.Init(Util::Format() << FileSystemPath::GetPath(FileSystemPath::Assets)))
         InfoLog("VR: options menu unavailable");
+      // Your own gun model (optional): Assets/VRGunModel.obj, in metres, grip at the origin,
+      // barrel along -Z, +Y up. Chosen with VRGunModel = 2 ("Custom" in the menu).
+      {
+        const std::string gunPath = Util::Format() << FileSystemPath::GetPath(FileSystemPath::Assets) << "VRGunModel.obj";
+        if (xr->LoadCustomGun(gunPath))
+          InfoLog("VR: custom gun model loaded from %s", gunPath.c_str());
+      }
     }
     else
     {
@@ -1566,6 +1573,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       g_tileGenHide.on = vrHideP2Tiles && s_vrSettings.hideP2 && xr->InPlay();
       // gun model: in the hand that fires (Either), the chosen hand, or both (akimbo)
       xr->SetGunHands(!s_vrSettings.gunModel ? 0 : s_vrSettings.gunHand == 3 ? 3 : (1 << s_vrGunHand));
+      xr->SetGunMode(s_vrSettings.gunModel);
 
       // Options menu: left controller's menu button opens/closes it; the game pauses meanwhile.
       {

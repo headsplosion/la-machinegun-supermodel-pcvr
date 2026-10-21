@@ -13,6 +13,8 @@
 // OpenGL view space: +X right, +Y up, -Z forward -- the same convention OpenXR uses.
 // So head tracking is simply: modelMat' = eyeView * modelMat.
 
+#include <vector>
+
 namespace New3D {
 
 struct VREye
@@ -69,6 +71,16 @@ struct VRHandModel
 	bool		upsideDown	= false;	// roll it over
 };
 extern VRHandModel g_vrHandModel;
+
+// The same hand model as plain triangles in "hand space" (metres; barrel along -Z, +Y up, grip at
+// the origin), for the VR layer to draw it itself (cinema mode). 9 floats per vertex: position,
+// normal, colour. 'version' changes whenever it is rebuilt.
+struct VRHandMesh
+{
+	std::vector<float>	verts;
+	unsigned			version = 0;
+};
+extern VRHandMesh g_vrHandMesh;
 
 class IVRFrameTarget
 {

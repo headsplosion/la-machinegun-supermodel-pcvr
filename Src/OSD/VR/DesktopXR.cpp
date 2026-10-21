@@ -22,6 +22,8 @@
 #include <openxr/openxr_platform.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -762,6 +764,56 @@ void main() {
   fragColor = vec4(vec3(v), 1.0);
 })";
 
+// Gun model held in the hand: lit by the room (soft top light) and by the cinema screen in
+// front, whose average colour (smallest mip of the cinema picture) tints the light.
+const char* kGunVS = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNrm;
+layout(location = 2) in vec3 aCol;
+uniform mat4 uMvp;
+uniform mat4 uModel;
+out vec3 vNrm;
+out vec3 vCol;
+out vec3 vWorld;
+void main()
+{
+  vec4 w = uModel * vec4(aPos, 1.0);
+  vWorld = w.xyz;
+  vNrm = mat3(uModel) * aNrm;
+  vCol = aCol;
+  gl_Position = uMvp * vec4(aPos, 1.0);
+}
+)";
+
+const char* kGunFS = R"(#version 330 core
+in vec3 vNrm;
+in vec3 vCol;
+in vec3 vWorld;
+uniform vec3 uEye;
+uniform sampler2D uScreen;
+uniform float uUseScreen;
+out vec4 fragColor;
+void main()
+{
+  vec3 n = normalize(vNrm);
+  if (!gl_FrontFacing) n = -n;
+  vec3 v = normalize(uEye - vWorld);
+  vec3 sc = vec3(0.75, 0.78, 0.85);
+  if (uUseScreen > 0.5)
+    sc = clamp(textureLod(uScreen, vec2(0.5), 16.0).rgb * 1.6 + 0.12, 0.0, 1.0);
+  vec3 ls = normalize(vec3(0.0, 0.15, -1.0));   // towards the screen
+  vec3 lt = normalize(vec3(0.3, 1.0, 0.25));    // room light from above
+  float dt = max(dot(n, lt), 0.0);
+  float ds = max(dot(n, ls), 0.0);
+  float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+  vec3 light = vec3(0.30) + 0.60 * dt * vec3(1.0) + 0.75 * ds * sc;
+  float sp1 = pow(max(dot(n, normalize(ls + v)), 0.0), 40.0);
+  float sp2 = pow(max(dot(n, normalize(lt + v)), 0.0), 24.0);
+  vec3 col = vCol * light + 0.35 * sp1 * sc + 0.18 * sp2 + 0.10 * rim * sc;
+  fragColor = vec4(col, 1.0);
+}
+)";
+
 bool DesktopXR::CreateShaders()
 {
   m_quadProgram = LinkProgram(kQuadVS, kQuadFS);
@@ -788,6 +840,14 @@ bool DesktopXR::CreateShaders()
     m_uVigSize   = glGetUniformLocation(m_vignetteProgram, "uSize");
     m_uVigRadius = glGetUniformLocation(m_vignetteProgram, "uRadius");
     m_uVigSoft   = glGetUniformLocation(m_vignetteProgram, "uSoft");
+  }
+  m_gunProgram = LinkProgram(kGunVS, kGunFS);
+  if (m_gunProgram) {
+    m_uGunMvp       = glGetUniformLocation(m_gunProgram, "uMvp");
+    m_uGunModel     = glGetUniformLocation(m_gunProgram, "uModel");
+    m_uGunEye       = glGetUniformLocation(m_gunProgram, "uEye");
+    m_uGunScreen    = glGetUniformLocation(m_gunProgram, "uScreen");
+    m_uGunUseScreen = glGetUniformLocation(m_gunProgram, "uUseScreen");
   }
   m_bezelProgram = LinkProgram(kBezelVS, kBezelFS);
   if (m_bezelProgram) {
@@ -840,6 +900,16 @@ void DesktopXR::Shutdown()
     New3D::SetVRFrameTarget(nullptr);
   if (m_lineProgram) glDeleteProgram(m_lineProgram);
   if (m_bezelProgram) glDeleteProgram(m_bezelProgram);
+  if (m_gunProgram) glDeleteProgram(m_gunProgram);
+  for (int i = 0; i < 2; i++) {
+    if (m_gunVbo[i]) glDeleteBuffers(1, &m_gunVbo[i]);
+    if (m_gunVao[i]) glDeleteVertexArrays(1, &m_gunVao[i]);
+    m_gunVbo[i] = m_gunVao[i] = 0;
+    m_gunCount[i] = 0;
+  }
+  if (m_gunDepth) glDeleteRenderbuffers(1, &m_gunDepth);
+  m_gunDepth = 0;
+  m_gunProgram = 0;
   m_lineProgram = 0;
   if (m_vignetteProgram) glDeleteProgram(m_vignetteProgram);
   m_vignetteProgram = 0;
@@ -1450,32 +1520,224 @@ void DesktopXR::DrawCinemaInEye(const New3D::VREye& eye)
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+int DesktopXR::EffectiveGunMode() const
+{
+  if (m_gunMode == 2 && !CustomGunLoaded())
+    return 1;   // no custom model: fall back to the game's gun
+  return m_gunMode;
+}
+
+bool DesktopXR::HandMatrix(int h, float m[16]) const
+{
+  // Controller aim pose in the same space and units as the eye views (see ComputeEye):
+  // rotation as is, position in world units.
+  if (h < 0 || h > 1 || !m_handPoseValid[h])
+    return false;
+  const float s = m_config.worldUnitsPerMeter;
+  XrVector3f pos = m_handPose[h].position;
+  if (!m_config.positionalTracking)
+    pos = {pos.x - m_headPose.position.x, pos.y - m_headPose.position.y, pos.z - m_headPose.position.z};
+  float r[9];
+  QuatToMat3(m_handPose[h].orientation, r);
+  for (int col = 0; col < 3; col++)
+    for (int row = 0; row < 3; row++)
+      m[col * 4 + row] = r[col * 3 + row];   // QuatToMat3 is column-major
+  m[3] = m[7] = m[11] = 0.f;
+  m[12] = pos.x * s; m[13] = pos.y * s; m[14] = pos.z * s; m[15] = 1.f;
+  return true;
+}
+
 int DesktopXR::HandPoses(New3D::VRHandPose* out, int max) const
 {
-  // Controller aim poses for the hands that hold the gun model, in the same space and units
-  // as the eye views (see ComputeEye): rotation as is, position in world units.
+  // The game's gun inside the 3D scene: only during play, never in cinema mode (the VR layer
+  // draws the guns itself there) and not when the custom model is chosen.
   int n = 0;
-  if (!m_inPlay || m_config.cinema)
-    return 0;   // only during play, and never in cinema mode
-  const float s = m_config.worldUnitsPerMeter;
+  if (!m_inPlay || m_config.cinema || EffectiveGunMode() != 1)
+    return 0;
   for (int h = 0; h < 2 && n < max; h++) {
-    if (!(m_gunHands & (1 << h)) || !m_handPoseValid[h])
+    if (!(m_gunHands & (1 << h)) || !HandMatrix(h, out[n].pose))
       continue;
-    XrVector3f pos = m_handPose[h].position;
-    if (!m_config.positionalTracking)
-      pos = {pos.x - m_headPose.position.x, pos.y - m_headPose.position.y, pos.z - m_headPose.position.z};
-    float r[9];
-    QuatToMat3(m_handPose[h].orientation, r);
-    float* m = out[n].pose;
-    for (int col = 0; col < 3; col++)
-      for (int row = 0; row < 3; row++)
-        m[col * 4 + row] = r[col * 3 + row];   // QuatToMat3 is column-major
-    m[3] = m[7] = m[11] = 0.f;
-    m[12] = pos.x * s; m[13] = pos.y * s; m[14] = pos.z * s; m[15] = 1.f;
-    out[n].unitsPerMeter = s;
+    out[n].unitsPerMeter = m_config.worldUnitsPerMeter;
     n++;
   }
   return n;
+}
+
+static void UploadGun(GLuint& vao, GLuint& vbo, GLsizei& count, const std::vector<float>& v)
+{
+  if (!vao) glGenVertexArrays(1, &vao);
+  if (!vbo) glGenBuffers(1, &vbo);
+  glBindVertexArray(vao);
+  glBindBuffer(GL_ARRAY_BUFFER, vbo);
+  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(v.size() * sizeof(float)), v.empty() ? nullptr : v.data(), GL_STATIC_DRAW);
+  for (int a = 0; a < 3; a++) {
+    glEnableVertexAttribArray(a);
+    glVertexAttribPointer(a, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (const void*)(a * 3 * sizeof(float)));
+  }
+  glBindVertexArray(0);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  count = (GLsizei)(v.size() / 9);
+}
+
+void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
+{
+  const int mode = EffectiveGunMode();
+  if (!m_gunProgram || !m_inPlay || mode == 0 || !m_gunHands)
+    return;
+  if (mode == 1 && !m_config.cinema)
+    return;   // drawn by New3D inside the scene
+  const int slot = mode == 2 ? 1 : 0;
+  if (slot == 1 && !m_customGun.empty()) {
+    UploadGun(m_gunVao[1], m_gunVbo[1], m_gunCount[1], m_customGun);
+    std::vector<float>().swap(m_customGun);
+  }
+  if (slot == 0 && m_gunVersion != New3D::g_vrHandMesh.version) {
+    UploadGun(m_gunVao[0], m_gunVbo[0], m_gunCount[0], New3D::g_vrHandMesh.verts);
+    m_gunVersion = New3D::g_vrHandMesh.version;
+  }
+  if (m_gunCount[slot] <= 0)
+    return;
+
+  if (!m_gunDepth || m_gunDepthW != eye.width || m_gunDepthH != eye.height) {
+    if (!m_gunDepth) glGenRenderbuffers(1, &m_gunDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, m_gunDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, eye.width, eye.height);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    m_gunDepthW = eye.width;
+    m_gunDepthH = eye.height;
+  }
+  float proj[16], pv[16];
+  EyeProjection(eye, proj);
+  New3D::VRMul4(proj, eye.view, pv);
+  // eye position in world space: -R^T t of the view matrix
+  const float* V = eye.view;
+  const float ex = -(V[0] * V[12] + V[1] * V[13] + V[2] * V[14]);
+  const float ey = -(V[4] * V[12] + V[5] * V[13] + V[6] * V[14]);
+  const float ez = -(V[8] * V[12] + V[9] * V[13] + V[10] * V[14]);
+  const int v = (FlatViewCount() == 2 && m_cinemaValid[1] && &eye == &m_curEye[1]) ? 1 : 0;
+  const bool useScreen = m_config.cinema && m_cinemaValid[v];
+
+  glBindFramebuffer(GL_FRAMEBUFFER, eye.fbo);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_gunDepth);
+  glViewport(0, 0, eye.width, eye.height);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_BLEND);
+  glDisable(GL_CULL_FACE);
+  glDepthMask(GL_TRUE);
+  glClearDepth(1.0);
+  glClear(GL_DEPTH_BUFFER_BIT);
+  glEnable(GL_DEPTH_TEST);
+  glDepthFunc(GL_LESS);
+  glUseProgram(m_gunProgram);
+  glUniform3f(m_uGunEye, ex, ey, ez);
+  glUniform1f(m_uGunUseScreen, useScreen ? 1.f : 0.f);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, useScreen ? m_cinemaTex[v] : 0);
+  glUniform1i(m_uGunScreen, 0);
+  glBindVertexArray(m_gunVao[slot]);
+  const float s = m_config.worldUnitsPerMeter;
+  for (int h = 0; h < 2; h++) {
+    float pose[16];
+    if (!(m_gunHands & (1 << h)) || !HandMatrix(h, pose))
+      continue;
+    for (int i = 0; i < 12; i++)
+      if (i % 4 != 3) pose[i] *= s;   // the meshes are in metres
+    float mvp[16];
+    New3D::VRMul4(pv, pose, mvp);
+    glUniformMatrix4fv(m_uGunMvp, 1, GL_FALSE, mvp);
+    glUniformMatrix4fv(m_uGunModel, 1, GL_FALSE, pose);
+    glDrawArrays(GL_TRIANGLES, 0, m_gunCount[slot]);
+  }
+  glBindVertexArray(0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glUseProgram(0);
+  glDisable(GL_DEPTH_TEST);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+bool DesktopXR::LoadCustomGun(const std::string& objPath)
+{
+  // Minimal OBJ: v, vn, f (v, v/vt, v//vn, v/vt/vn; polygons as fans), colours from the
+  // Kd of each usemtl in the mtllib next to it. Units: metres, grip at the origin, barrel -Z, +Y up.
+  FILE* f = fopen(objPath.c_str(), "rb");
+  if (!f)
+    return false;
+  std::string dir = objPath;
+  const size_t slash = dir.find_last_of("/\\");
+  dir = slash == std::string::npos ? std::string() : dir.substr(0, slash + 1);
+  std::vector<float> pos, nrm, out;
+  std::vector<std::pair<std::string, std::array<float, 3>>> mats;
+  std::array<float, 3> kd = {0.5f, 0.5f, 0.5f};
+  auto loadMtl = [&](const std::string& name) {
+    FILE* m = fopen((dir + name).c_str(), "rb");
+    if (!m) return;
+    char line[512], cur[256] = "";
+    while (fgets(line, sizeof(line), m)) {
+      float r, g, b;
+      if (sscanf(line, " newmtl %255s", cur) == 1)
+        mats.push_back({cur, {0.5f, 0.5f, 0.5f}});
+      else if (sscanf(line, " Kd %f %f %f", &r, &g, &b) == 3 && !mats.empty())
+        mats.back().second = {r, g, b};
+    }
+    fclose(m);
+  };
+  char line[1024];
+  while (fgets(line, sizeof(line), f)) {
+    char* p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    float x, y, z;
+    char name[256];
+    if (p[0] == 'v' && p[1] == ' ' && sscanf(p + 2, "%f %f %f", &x, &y, &z) == 3) {
+      pos.insert(pos.end(), {x, y, z});
+    } else if (p[0] == 'v' && p[1] == 'n' && sscanf(p + 3, "%f %f %f", &x, &y, &z) == 3) {
+      nrm.insert(nrm.end(), {x, y, z});
+    } else if (sscanf(p, "mtllib %255s", name) == 1) {
+      loadMtl(name);
+    } else if (sscanf(p, "usemtl %255s", name) == 1) {
+      for (auto& m : mats)
+        if (m.first == name) kd = m.second;
+    } else if (p[0] == 'f' && p[1] == ' ') {
+      int vi[64], ni[64], n = 0;
+      char* q = p + 2;
+      while (*q && n < 64) {
+        while (*q == ' ' || *q == '\t') q++;
+        if (!*q || *q == '\r' || *q == '\n') break;
+        int a = (int)strtol(q, &q, 10), c = 0;
+        if (*q == '/') {
+          q++;
+          if (*q != '/') strtol(q, &q, 10);
+          if (*q == '/') { q++; c = (int)strtol(q, &q, 10); }
+        }
+        while (*q && *q != ' ' && *q != '\t' && *q != '\r' && *q != '\n') q++;
+        const int nv = (int)pos.size() / 3, nn = (int)nrm.size() / 3;
+        vi[n] = a < 0 ? nv + a : a - 1;
+        ni[n] = c < 0 ? nn + c : c - 1;
+        if (vi[n] < 0 || vi[n] >= nv) { n = 0; break; }
+        if (ni[n] >= nn) ni[n] = -1;
+        n++;
+      }
+      for (int k = 1; k + 1 < n; k++) {
+        const int t[3] = {0, k, k + 1};
+        const float* A = &pos[vi[0] * 3]; const float* B = &pos[vi[k] * 3]; const float* C = &pos[vi[k + 1] * 3];
+        float e1[3] = {B[0] - A[0], B[1] - A[1], B[2] - A[2]}, e2[3] = {C[0] - A[0], C[1] - A[1], C[2] - A[2]};
+        float fn[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+        const float l = std::sqrt(fn[0] * fn[0] + fn[1] * fn[1] + fn[2] * fn[2]);
+        if (l > 0.f) { fn[0] /= l; fn[1] /= l; fn[2] /= l; }
+        for (int c = 0; c < 3; c++) {
+          const float* P = &pos[vi[t[c]] * 3];
+          const float* N = ni[t[c]] >= 0 ? &nrm[ni[t[c]] * 3] : fn;
+          out.insert(out.end(), {P[0], P[1], P[2], N[0], N[1], N[2], kd[0], kd[1], kd[2]});
+        }
+      }
+    }
+  }
+  fclose(f);
+  if (out.empty())
+    return false;
+  m_customGun.swap(out);
+  m_gunCount[1] = 0;
+  return true;
 }
 
 void DesktopXR::DrawCinemaBezel(const float* mvp, GLuint tex)
@@ -1879,11 +2141,13 @@ void DesktopXR::EndEye(int eye)
   if (eye < 0 || eye > 1)
     return;
   if (m_eyes[eye].acquired != UINT32_MAX) {
-    if (m_config.cinema)
+    if (m_config.cinema) {
       DrawCinemaInEye(m_curEye[eye]);
-    else {
+      DrawHandGuns(m_curEye[eye]);
+    } else {
       if (m_config.hudInEye)
         DrawHudInEye(m_curEye[eye]);
+      DrawHandGuns(m_curEye[eye]);
       DrawVignette(m_curEye[eye]);
     }
     if (m_menuOpen && m_menuTex)

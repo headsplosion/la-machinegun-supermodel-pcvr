@@ -99,7 +99,12 @@ Settings (Config/Supermodel.ini, [ Global ])
   VRCinema, VRCinemaSize, VRCinemaDepth, VRCinemaGlow, VRCinemaBezel
                         cinema mode on/off, screen size 0-2, 3D depth 0 flat / 1 shallow / 2 full
   VRGunHand             0 = either, 1 = right, 2 = left, 3 = both (akimbo)
-  VRGunModel            1 = the game's gun model in your hand
+  VRGunModel            gun model in your hand: 0 = off, 1 = the game's gun (read from your
+                        ROM), 2 = your own model from Assets/VRGunModel.obj (falls back to the
+                        game's gun if the file is missing). Shown in cinema mode too, in front
+                        of the screen and lit by it.
+                        Your own model: a Wavefront OBJ in metres, the hand / grip at the origin,
+                        barrel pointing along -Z, +Y up; colours from the Kd of its .mtl.
   VRGunModelLength      its length in metres (0.75); VRGunModelFlip / VRGunModelUpsideDown = 1
                         turn it round or over if a headset's controller pose needs it
   VRRecoil              0 = off, 1 = light, 2 = strong

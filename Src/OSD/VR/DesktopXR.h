@@ -156,6 +156,13 @@ public:
     m_hideLetterbox = hideLetterbox;
   }
 
+  // Gun model drawn in the hands: 0 off, 1 the game's gun, 2 a custom OBJ (Assets/VRGunModel.obj).
+  // The game's gun is drawn inside the 3D scene; in cinema mode, and for the custom model, the
+  // VR layer draws it itself, in the room.
+  void SetGunMode(int mode) { m_gunMode = mode; }
+  bool LoadCustomGun(const std::string& objPath);   // false = no file / nothing usable in it
+  bool CustomGunLoaded() const { return !m_customGun.empty() || m_gunCount[1] > 0; }
+
   int EyeWidth()  const { return m_eyes[0].width; }
   int EyeHeight() const { return m_eyes[0].height; }
 
@@ -189,6 +196,9 @@ private:
   void DrawMenuInEye(const New3D::VREye& eye);
   void DrawVignette(const New3D::VREye& eye);
   void DrawCinemaInEye(const New3D::VREye& eye);
+  void DrawHandGuns(const New3D::VREye& eye);
+  bool HandMatrix(int hand, float m[16]) const;   // controller aim pose, world units
+  int  EffectiveGunMode() const;
   void UpdateComfort();
   float CinemaScale() const;
   void EyeProjection(const New3D::VREye& eye, float proj[16]) const;
@@ -275,6 +285,14 @@ private:
   static constexpr int   kCinemaW = 1488, kCinemaH = 1152;
   static constexpr float kCinemaDistance = 4.0f;   // metres
   GLuint m_cinemaTex[2] = {0, 0}, m_cinemaFbo[2] = {0, 0};   // one per eye in 3D cinema
+  int    m_gunMode = 0;
+  std::vector<float> m_customGun;              // pending upload: pos, normal, colour per vertex
+  GLuint m_gunProgram = 0, m_gunVao[2] = {0, 0}, m_gunVbo[2] = {0, 0};   // 0 = game gun, 1 = custom
+  GLsizei m_gunCount[2] = {0, 0};
+  unsigned m_gunVersion = ~0u;
+  GLint  m_uGunMvp = -1, m_uGunModel = -1, m_uGunEye = -1, m_uGunScreen = -1, m_uGunUseScreen = -1;
+  GLuint m_gunDepth = 0;
+  int    m_gunDepthW = 0, m_gunDepthH = 0;
   bool   m_cinemaValid[2] = {false, false};
   float  m_ipd = 0.064f;   // eye distance from the headset (metres)
   GLuint m_lineProgram = 0;

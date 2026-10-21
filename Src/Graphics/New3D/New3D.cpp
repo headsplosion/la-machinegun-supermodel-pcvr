@@ -43,6 +43,7 @@ static IVRFrameTarget* s_vrTarget = nullptr;
 void SetVRFrameTarget(IVRFrameTarget* target) { s_vrTarget = target; }
 IVRFrameTarget* GetVRFrameTarget() { return s_vrTarget; }
 VRHandModel g_vrHandModel;
+VRHandMesh  g_vrHandMesh;
 
 CNew3D::CNew3D(const Util::Config::Node &config, const std::string& gameName) : 
 	m_gameName(gameName),
@@ -890,6 +891,51 @@ void CNew3D::DrawVRFlat(IVRFrameTarget* vr)
 // it are added to the main 3D view, hidden; before the eyes are drawn they get the controller
 // poses. They are drawn only into the headset eyes.
 
+// Hand space: s * A * (v - grip). Returns s (0 = no usable model).
+static float VRHandLocal(const std::array<float, 7>& b, const std::array<float, 3>& cen, float unitsPerMeter, float local[16])
+{
+	float d[3], mid[3];
+	for (int a = 0; a < 3; a++) {
+		d[a] = b[3 + a] - b[a];
+		mid[a] = 0.5f * (b[3 + a] + b[a]);
+	}
+	// longest side = barrel; the next one = up; the last one = sideways
+	int L = 0;
+	for (int a = 1; a < 3; a++) if (d[a] > d[L]) L = a;
+	int U = (L + 1) % 3, W = (L + 2) % 3;
+	if (d[W] > d[U]) std::swap(U, W);
+	const float len = d[L];
+	if (len <= 1e-6f) {
+		return 0.0f;
+	}
+	// The grip / receiver end is the bulky one: the vertices' centre leans towards it.
+	const float bulky = cen[L] >= mid[L] ? 1.0f : -1.0f;
+	const float barrel = g_vrHandModel.flip ? bulky : -bulky;	// direction of the muzzle along L
+	const float up = g_vrHandModel.upsideDown ? -1.0f : 1.0f;
+	// rows of the model -> controller rotation: x = sx*W, y = up*U, z = -barrel*L
+	float rowsP[3][3] = { {0,0,0}, {0,0,0}, {0,0,0} };
+	rowsP[0][W] = 1.0f; rowsP[1][U] = 1.0f; rowsP[2][L] = 1.0f;
+	const float detP = rowsP[0][0] * (rowsP[1][1] * rowsP[2][2] - rowsP[1][2] * rowsP[2][1])
+			 - rowsP[0][1] * (rowsP[1][0] * rowsP[2][2] - rowsP[1][2] * rowsP[2][0])
+			 + rowsP[0][2] * (rowsP[1][0] * rowsP[2][1] - rowsP[1][1] * rowsP[2][0]);
+	const float sx = up * -barrel * detP;	// keeps it a rotation (no mirroring)
+	float A[3][3] = { {0,0,0}, {0,0,0}, {0,0,0} };
+	A[0][W] = sx; A[1][U] = up; A[2][L] = -barrel;
+	// grip point: on the centre line, gripFrac of the length in from the bulky end
+	float grip[3] = { mid[0], mid[1], mid[2] };
+	grip[L] = (bulky > 0 ? b[3 + L] : b[L]) - bulky * g_vrHandModel.gripFrac * len;
+	const float s = unitsPerMeter * g_vrHandModel.length / len;
+	// local = s * A * (v - grip)
+	for (int col = 0; col < 3; col++)
+		for (int row = 0; row < 3; row++)
+		local[col * 4 + row] = s * A[row][col];
+	for (int row = 0; row < 3; row++)
+		local[12 + row] = -s * (A[row][0] * grip[0] + A[row][1] * grip[1] + A[row][2] * grip[2]);
+	local[3] = local[7] = local[11] = 0.0f;
+	local[15] = 1.0f;
+	return s;
+}
+
 void CNew3D::VRAddHandModels()
 {
 	m_vrHandNode = -1;
@@ -909,8 +955,44 @@ void CNew3D::VRAddHandModels()
 		CacheModel(&tmp, TranslateModelAddress(addr));
 		m_cachingAddr = 0;
 	}
-	if (meshes->empty() || !m_romBounds.count(addr)) {
+	if (meshes->empty() || !m_romBounds.count(addr) || !m_romCentroid.count(addr)) {
 		return;
+	}
+	// A copy as plain triangles in hand space, for the VR layer to draw itself (cinema mode).
+	{
+		static UINT32 builtAddr = 0;
+		static float builtLength = 0.0f;
+		static bool builtFlip = false, builtUpside = false;
+		if (builtAddr != addr || builtLength != g_vrHandModel.length || builtFlip != g_vrHandModel.flip || builtUpside != g_vrHandModel.upsideDown) {
+			float local[16];
+			const float s = VRHandLocal(m_romBounds[addr], m_romCentroid[addr], 1.0f, local);
+			std::vector<float> out;
+			if (s > 0.0f) {
+				for (const auto& mesh : *meshes) {
+					if (mesh.vboOffset < 0 || mesh.vboOffset + mesh.vertexCount > (int)m_polyBufferRom.size()) {
+						continue;
+					}
+					for (int i = 0; i < mesh.vertexCount; i++) {
+						const FVertex& v = m_polyBufferRom[mesh.vboOffset + i];
+						const float* p = v.base.pos;
+						const float* nn = v.base.normal;
+						float q[3], nq[3];
+						for (int r = 0; r < 3; r++) {
+							q[r] = local[r] * p[0] + local[4 + r] * p[1] + local[8 + r] * p[2] + local[12 + r];
+							nq[r] = (local[r] * nn[0] + local[4 + r] * nn[1] + local[8 + r] * nn[2]) / s;
+						}
+						const float nl2 = std::sqrt(nq[0] * nq[0] + nq[1] * nq[1] + nq[2] * nq[2]);
+						for (int r = 0; r < 3; r++) out.push_back(q[r]);
+						for (int r = 0; r < 3; r++) out.push_back(nl2 > 1e-6f ? nq[r] / nl2 : 0.0f);
+						for (int r = 0; r < 3; r++) out.push_back(v.faceColour[r] / 255.0f);
+					}
+				}
+			}
+			g_vrHandMesh.verts.swap(out);
+			g_vrHandMesh.version++;
+			builtAddr = addr; builtLength = g_vrHandModel.length;
+			builtFlip = g_vrHandModel.flip; builtUpside = g_vrHandModel.upsideDown;
+		}
 	}
 	int best = -1;
 	size_t bestModels = 0;
@@ -964,48 +1046,11 @@ void CNew3D::VRPoseHandModels(IVRFrameTarget* vr)
 		if (k >= count || bi == m_romBounds.end() || ci == m_romCentroid.end()) {
 			continue;
 		}
-		const auto& b = bi->second;
-		const auto& cen = ci->second;
-		float d[3], mid[3];
-		for (int a = 0; a < 3; a++) {
-			d[a] = b[3 + a] - b[a];
-			mid[a] = 0.5f * (b[3 + a] + b[a]);
-		}
-		// longest side = barrel; the next one = up; the last one = sideways
-		int L = 0;
-		for (int a = 1; a < 3; a++) if (d[a] > d[L]) L = a;
-		int U = (L + 1) % 3, W = (L + 2) % 3;
-		if (d[W] > d[U]) std::swap(U, W);
-		const float len = d[L];
-		if (len <= 1e-6f) {
+		float local[16];
+		const float s = VRHandLocal(bi->second, ci->second, poses[k].unitsPerMeter, local);
+		if (s <= 0.0f) {
 			continue;
 		}
-		// The grip / receiver end is the bulky one: the vertices' centre leans towards it.
-		const float bulky = cen[L] >= mid[L] ? 1.0f : -1.0f;
-		const float barrel = g_vrHandModel.flip ? bulky : -bulky;	// direction of the muzzle along L
-		const float up = g_vrHandModel.upsideDown ? -1.0f : 1.0f;
-		// rows of the model -> controller rotation: x = sx*W, y = up*U, z = -barrel*L
-		float rowsP[3][3] = { {0,0,0}, {0,0,0}, {0,0,0} };
-		rowsP[0][W] = 1.0f; rowsP[1][U] = 1.0f; rowsP[2][L] = 1.0f;
-		const float detP = rowsP[0][0] * (rowsP[1][1] * rowsP[2][2] - rowsP[1][2] * rowsP[2][1])
-						 - rowsP[0][1] * (rowsP[1][0] * rowsP[2][2] - rowsP[1][2] * rowsP[2][0])
-						 + rowsP[0][2] * (rowsP[1][0] * rowsP[2][1] - rowsP[1][1] * rowsP[2][0]);
-		const float sx = up * -barrel * detP;		// keeps it a rotation (no mirroring)
-		float A[3][3] = { {0,0,0}, {0,0,0}, {0,0,0} };
-		A[0][W] = sx; A[1][U] = up; A[2][L] = -barrel;
-		// grip point: on the centre line, gripFrac of the length in from the bulky end
-		float grip[3] = { mid[0], mid[1], mid[2] };
-		grip[L] = (bulky > 0 ? b[3 + L] : b[L]) - bulky * g_vrHandModel.gripFrac * len;
-		const float s = poses[k].unitsPerMeter * g_vrHandModel.length / len;
-		// local = s * A * (v - grip)
-		float local[16];
-		for (int col = 0; col < 3; col++)
-			for (int row = 0; row < 3; row++)
-				local[col * 4 + row] = s * A[row][col];
-		for (int row = 0; row < 3; row++)
-			local[12 + row] = -s * (A[row][0] * grip[0] + A[row][1] * grip[1] + A[row][2] * grip[2]);
-		local[3] = local[7] = local[11] = 0.0f;
-		local[15] = 1.0f;
 		VRMul4(poses[k].pose, local, g.modelMat);
 		g.scale = s;		// the shader divides normals by it, keeping the lighting right
 		g.vrHidden = false;
