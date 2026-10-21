@@ -1023,10 +1023,11 @@ void DesktopXR::DrawMenuInEye(const New3D::VREye& eye)
     if (!m_input.rayValid[h])
       continue;
     const XrVector3f o = m_input.rayOrigin[h], d = m_input.rayDir[h];
-    const float len = m_input.menuHit[h] ? m_input.menuDist[h] : 2.0f;
+    const float len = m_input.menuGrab[h] ? m_menuGrabDist : (m_input.menuHit[h] ? m_input.menuDist[h] : 2.0f);
     glUniform3f(m_uLineA, o.x, o.y, o.z);
     glUniform3f(m_uLineB, o.x + d.x * len, o.y + d.y * len, o.z + d.z * len);
-    if (m_input.menuHit[h]) glUniform4f(m_uLineColor, 1.0f, 0.6f, 0.2f, 1.0f);
+    if (m_input.menuGrab[h])     glUniform4f(m_uLineColor, 0.35f, 0.75f, 1.0f, 1.0f);   // carrying the menu
+    else if (m_input.menuHit[h]) glUniform4f(m_uLineColor, 1.0f, 0.6f, 0.2f, 1.0f);
     else                    glUniform4f(m_uLineColor, 0.6f, 0.6f, 0.6f, 1.0f);
     glDrawArrays(GL_LINES, 0, 2);
   }
@@ -2083,7 +2084,34 @@ void DesktopXR::SyncInput()
           in.menuHit[h] = u >= 0.f && u <= 1.f && v >= 0.f && v <= 1.f;
         }
       }
-    }
+      // Grip (side button) on the panel: pick the menu up. It follows the ray at the same
+      // distance, keeps the grabbed point under the pointer and turns to face the player.
+      if (in.grip[h] && !m_prevGrip[h] && m_menuGrabHand < 0 && in.menuHit[h]) {
+        m_menuGrabHand = h;
+        m_menuGrabDist = in.menuDist[h];
+        m_menuGrabX = (in.menuU[h] - 0.5f) * kMenuWidth;
+        m_menuGrabY = (0.5f - in.menuV[h]) * kMenuHeight;
+        Haptic(h, 0.25f, 0.03f);
+      }
+      if (m_menuGrabHand == h) {
+        if (!in.grip[h]) {
+          m_menuGrabHand = -1;
+          Haptic(h, 0.15f, 0.02f);
+        } else {
+          const XrVector3f p = {o.x + m_menuGrabDist * dir.x, o.y + m_menuGrabDist * dir.y, o.z + m_menuGrabDist * dir.z};
+          const XrVector3f hp = m_headPose.position;
+          const float dx = hp.x - p.x, dz = hp.z - p.z;
+          if (dx * dx + dz * dz > 0.04f)
+            m_menuYaw = std::atan2(dx, dz);
+          const float cs2 = std::cos(m_menuYaw), sn2 = std::sin(m_menuYaw);
+          m_menuCenter = {p.x - m_menuGrabX * cs2, p.y - m_menuGrabY, p.z + m_menuGrabX * sn2};
+          in.menuHit[h] = false;   // no clicking while carrying the menu
+          in.menuGrab[h] = true;
+        }
+      }
+    } else
+      m_menuGrabHand = -1;
+    m_prevGrip[h] = in.grip[h];
     if (dir.z > -1e-4f)
       continue;
     // In cinema mode the screen is smaller and nearer: aim at it instead.

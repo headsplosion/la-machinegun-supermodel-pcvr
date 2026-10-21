@@ -50,6 +50,7 @@ struct DesktopXRInput
   XrVector3f rayOrigin[2] = {{0, 0, 0}, {0, 0, 0}};
   XrVector3f rayDir[2] = {{0, 0, -1}, {0, 0, -1}};
   bool  menuHit[2] = {false, false};
+  bool  menuGrab[2] = {false, false};   // this hand is carrying the menu (grip held)
   float menuU[2] = {0, 0}, menuV[2] = {0, 0}, menuDist[2] = {0, 0};
 };
 
@@ -288,6 +289,10 @@ private:
   GLuint     m_menuTex = 0;
   float      m_menuYaw = 0.f;
   XrVector3f m_menuCenter{0.f, 0.f, -kMenuDistance};
+  int        m_menuGrabHand = -1;     // hand holding the menu with its grip button (-1 = none)
+  float      m_menuGrabDist = 0.f;    // distance along that hand's ray to the grabbed point
+  float      m_menuGrabX = 0.f, m_menuGrabY = 0.f;   // grabbed point relative to the panel centre (metres)
+  bool       m_prevGrip[2] = {false, false};
 };
 
 #endif
