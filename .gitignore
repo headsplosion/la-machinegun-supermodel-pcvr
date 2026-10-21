@@ -403,3 +403,4 @@ pkg/
 # Menu artwork is personal (game artwork); never commit it
 Assets/VRMenuFrame.tga
 Assets/VRMenuFrame.txt
+Assets/VRGunModel.*
