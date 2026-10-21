@@ -881,6 +881,7 @@ static void VRReadSettings()
   v.cinemaSize  = std::clamp(s_runtime_config["VRCinemaSize"].ValueAsDefault<int>(v.cinemaSize), 0, 2);
   v.cinemaDepth = std::clamp(s_runtime_config["VRCinemaDepth"].ValueAsDefault<int>(v.cinemaDepth), 0, 2);
   v.cinemaGlow  = std::clamp(s_runtime_config["VRCinemaGlow"].ValueAsDefault<int>(v.cinemaGlow), 0, 2);
+  v.cinemaBezel = std::clamp(s_runtime_config["VRCinemaBezel"].ValueAsDefault<int>(v.cinemaBezel), 0, 1);
   v.hudLock     = std::clamp(s_runtime_config["VRHudLock"].ValueAsDefault<int>(v.hudLock), 0, 2);
   v.hideP2      = s_runtime_config["VRHideP2Prompt"].ValueAsDefault<bool>(v.hideP2);
   v.staticFill  = s_runtime_config["VRStaticFill"].ValueAsDefault<bool>(v.staticFill);
@@ -900,6 +901,7 @@ static void VRApplySettings(DesktopXR &xr)
   c.cinemaSize   = s_vrSettings.cinemaSize;
   c.cinemaDepth  = s_vrSettings.cinemaDepth;
   c.cinemaGlow   = s_vrSettings.cinemaGlow;
+  c.cinemaBezel  = s_vrSettings.cinemaBezel;
   c.hudLock      = s_vrSettings.hudLock;
   c.hideP2Prompt = s_vrSettings.hideP2;
   c.staticFill   = s_vrSettings.staticFill;
@@ -919,6 +921,7 @@ static void VRSaveSettings()
     { "VRGunHand", std::to_string(v.gunHand) },     { "VRVignette", std::to_string(v.vignette) },
     { "VRCinema", v.cinema ? "1" : "0" },           { "VRCinemaSize", std::to_string(v.cinemaSize) },
     { "VRCinemaDepth", std::to_string(v.cinemaDepth) }, { "VRCinemaGlow", std::to_string(v.cinemaGlow) },
+    { "VRCinemaBezel", std::to_string(v.cinemaBezel) },
     { "VRHudLock", std::to_string(v.hudLock) },     { "VRHideP2Prompt", v.hideP2 ? "1" : "0" },
     { "VRStaticFill", v.staticFill ? "1" : "0" },   { "VRRecoil", std::to_string(v.recoil) },
     { "VRAimNudgeX", f(v.aimNudgeX) },              { "VRAimNudgeY", f(v.aimNudgeY) },
@@ -1375,6 +1378,7 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       vc.cinemaSize         = s_vrSettings.cinemaSize;
       vc.cinemaDepth        = s_vrSettings.cinemaDepth;
       vc.cinemaGlow         = s_vrSettings.cinemaGlow;
+      vc.cinemaBezel        = s_vrSettings.cinemaBezel;
       vc.hudLock            = s_vrSettings.hudLock;
       vc.hideP2Prompt       = s_vrSettings.hideP2;
       vc.staticFill         = s_vrSettings.staticFill;

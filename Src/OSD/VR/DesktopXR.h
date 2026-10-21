@@ -80,6 +80,7 @@ public:
     bool  cinema             = false;  // cinema mode: the flat game on a big screen
     int   cinemaSize         = 1;      // 0 small, 1 medium, 2 large
     int   cinemaDepth        = 2;      // 3D in cinema mode: 0 off (flat), 1 shallow, 2 full
+    int   cinemaBezel        = 1;      // cinema screen in a recessed frame whose inner walls reflect the picture: 0 off, 1 on
     int   cinemaGlow         = 1;      // light from the picture spilling around the cinema screen: 0 off, 1 subtle, 2 strong
   };
 
@@ -276,6 +277,9 @@ private:
   bool   m_cinemaValid[2] = {false, false};
   float  m_ipd = 0.064f;   // eye distance from the headset (metres)
   GLuint m_lineProgram = 0;
+  GLuint m_bezelProgram = 0;
+  GLint  m_uBzMvp = -1, m_uBzPos = -1, m_uBzSu = -1, m_uBzTex = -1, m_uBzKind = -1, m_uBzAspect = -1, m_uBzLight = -1, m_uBzShade = -1;
+  void   DrawCinemaBezel(const float* mvp, GLuint tex);
   GLint  m_uLineMvp = -1, m_uLineA = -1, m_uLineB = -1, m_uLineColor = -1;
 
   static constexpr float kMenuDistance = 1.4f;   // metres

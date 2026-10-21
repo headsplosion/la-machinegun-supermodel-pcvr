@@ -623,6 +623,51 @@ void main() {
   fragColor = vec4(0.0, 0.0, 0.0, a);
 })";
 
+// Cinema bezel: a recessed frame around the screen. Its four inner walls slope from the
+// screen's edge out towards the viewer and reflect a blurred, mirrored copy of the picture;
+// the flat front of the frame is dark plastic lit softly by the picture.
+// Each draw is one quad: uPos = corners in model space, uSu = the same corners in "screen
+// coordinates" (0..1 across the picture, outside it beyond the edge).
+const char* kBezelVS = R"(#version 330 core
+uniform mat4 uMvp;
+uniform vec3 uPos[4];
+uniform vec2 uSu[4];
+out vec2 vSu;
+void main() { vSu = uSu[gl_VertexID]; gl_Position = uMvp * vec4(uPos[gl_VertexID], 1.0); }
+)";
+const char* kBezelFS = R"(#version 330 core
+uniform sampler2D uTex;
+uniform int uKind;        // 0 inner wall (reflective), 1 front of the frame
+uniform vec2 uAspect;     // screen width / height, bevel width in screen heights
+uniform float uLight;     // 0..1 how much the picture lights the frame
+uniform float uShade;     // per wall: top walls catch less light than bottom ones
+in vec2 vSu;
+out vec4 fragColor;
+vec3 pic(vec2 su, float lod) { return textureLod(uTex, vec2(su.x, 1.0 - su.y), lod).rgb; }
+void main() {
+  vec2 e = clamp(vSu, 0.0, 1.0);
+  vec2 off = (vSu - e) * vec2(uAspect.x, 1.0);
+  float dist = length(off);                       // screen heights from the picture's edge
+  float lodBase = log2(float(textureSize(uTex, 0).y));
+  vec3 plastic = vec3(0.034, 0.034, 0.037);
+  if (uKind == 0) {
+    float w = clamp(dist / max(uAspect.y, 1e-4), 0.0, 1.0);   // 0 at the screen, 1 at the front
+    vec2 r = clamp(e - (vSu - e) * 1.15, 0.0, 1.0);          // mirrored across the edge
+    vec3 refl = pic(r, 0.5 + w * 3.5);                      // sharper near the screen, blurrier further out
+    vec3 lit  = pic(e, lodBase - 4.0);                      // soft light from the nearby picture
+    float k = 0.80 * pow(1.0 - w, 0.85) * uLight;
+    vec3 c = plastic + refl * k + lit * 0.05 * uLight;
+    c *= uShade;
+    c += vec3(0.010) * smoothstep(0.92, 1.0, w);            // a thin highlight on the front edge
+    fragColor = vec4(c, 1.0);
+  } else {
+    vec3 lit = pic(e, lodBase - 3.0);
+    float k = exp(-dist * 8.0) * 0.14 * uLight;
+    fragColor = vec4(plastic * 0.8 + lit * k, 1.0);
+  }
+}
+)";
+
 const char* kLineVS = R"(#version 330 core
 uniform mat4 uMvp;
 uniform vec3 uA, uB;
@@ -729,6 +774,17 @@ bool DesktopXR::CreateShaders()
     m_uVigRadius = glGetUniformLocation(m_vignetteProgram, "uRadius");
     m_uVigSoft   = glGetUniformLocation(m_vignetteProgram, "uSoft");
   }
+  m_bezelProgram = LinkProgram(kBezelVS, kBezelFS);
+  if (m_bezelProgram) {
+    m_uBzMvp    = glGetUniformLocation(m_bezelProgram, "uMvp");
+    m_uBzPos    = glGetUniformLocation(m_bezelProgram, "uPos");
+    m_uBzSu     = glGetUniformLocation(m_bezelProgram, "uSu");
+    m_uBzTex    = glGetUniformLocation(m_bezelProgram, "uTex");
+    m_uBzKind   = glGetUniformLocation(m_bezelProgram, "uKind");
+    m_uBzAspect = glGetUniformLocation(m_bezelProgram, "uAspect");
+    m_uBzLight  = glGetUniformLocation(m_bezelProgram, "uLight");
+    m_uBzShade  = glGetUniformLocation(m_bezelProgram, "uShade");
+  }
   m_lineProgram = LinkProgram(kLineVS, kLineFS);
   if (!m_lineProgram)
     return Fail("VR shaders failed to build");
@@ -768,6 +824,7 @@ void DesktopXR::Shutdown()
   if (New3D::GetVRFrameTarget() == this)
     New3D::SetVRFrameTarget(nullptr);
   if (m_lineProgram) glDeleteProgram(m_lineProgram);
+  if (m_bezelProgram) glDeleteProgram(m_bezelProgram);
   m_lineProgram = 0;
   if (m_vignetteProgram) glDeleteProgram(m_vignetteProgram);
   m_vignetteProgram = 0;
@@ -1359,6 +1416,12 @@ void DesktopXR::DrawCinemaInEye(const New3D::VREye& eye)
     glDisable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   }
+  if (m_config.cinemaBezel > 0 && m_bezelProgram) {
+    DrawCinemaBezel(mvp, m_cinemaTex[v]);
+    glBindVertexArray(m_vao);
+    glUseProgram(m_quadProgram);
+    glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, mvp);
+  }
   glUniform4f(m_uRect, m_gameL, m_gameR, m_gameT, m_gameB);
   glUniform1i(m_uMode, 3);
   glActiveTexture(GL_TEXTURE0);
@@ -1369,6 +1432,51 @@ void DesktopXR::DrawCinemaInEye(const New3D::VREye& eye)
   glBindVertexArray(0);
   glUseProgram(0);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void DesktopXR::DrawCinemaBezel(const float* mvp, GLuint tex)
+{
+  // Model space of the cinema screen: the picture is at z = -1 between m_gameL..R and m_gameB..T
+  // (x, y are scaled by distance x size, z by distance). The bevel walls run from the picture's
+  // edge to the front of the frame, which sits a little nearer to the viewer.
+  const float L = m_gameL, R = m_gameR, T = m_gameT, B = m_gameB;
+  const float w = R - L, h = T - B;
+  const float bevel = 0.075f * h;        // width of the sloping inner walls
+  const float front = 0.045f * h;        // width of the flat front of the frame
+  const float k = CinemaScale();
+  const float zf = -1.0f + bevel * k;    // walls at about 45 degrees (x, y carry the extra size factor k)
+  const float bs = bevel / h, fs = (bevel + front) / h;          // in screen heights
+  const float bx = bs / (w / h), fx = fs / (w / h);              // ... and in screen widths
+  glUseProgram(m_bezelProgram);
+  glBindVertexArray(m_vao);
+  glUniformMatrix4fv(m_uBzMvp, 1, GL_FALSE, mvp);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glUniform1i(m_uBzTex, 0);
+  glUniform2f(m_uBzAspect, w / h, bs);
+  glUniform1f(m_uBzLight, 1.0f);
+  auto quad = [&](const float (&p)[4][3], const float (&s)[4][2], int kind, float shade) {
+    glUniform3fv(m_uBzPos, 4, &p[0][0]);
+    glUniform2fv(m_uBzSu, 4, &s[0][0]);
+    glUniform1i(m_uBzKind, kind);
+    glUniform1f(m_uBzShade, shade);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  };
+  // corners: inner (picture edge, z = -1), outer (front edge of the walls, z = zf), frame (z = zf)
+  const float iL = L, iR = R, iT = T, iB = B;
+  const float oL = L - bevel, oR = R + bevel, oT = T + bevel, oB = B - bevel;
+  const float fL = oL - front, fR = oR + front, fT = oT + front, fB = oB - front;
+  // strip order: 0 = a-inner, 1 = b-inner, 2 = a-outer, 3 = b-outer
+  { const float p[4][3] = {{iL,iB,-1},{iL,iT,-1},{oL,oB,zf},{oL,oT,zf}}; const float s[4][2] = {{0,1},{0,0},{-bx,1+bs},{-bx,-bs}}; quad(p, s, 0, 0.95f); }   // left
+  { const float p[4][3] = {{iR,iT,-1},{iR,iB,-1},{oR,oT,zf},{oR,oB,zf}}; const float s[4][2] = {{1,0},{1,1},{1+bx,-bs},{1+bx,1+bs}}; quad(p, s, 0, 0.95f); } // right
+  { const float p[4][3] = {{iL,iT,-1},{iR,iT,-1},{oL,oT,zf},{oR,oT,zf}}; const float s[4][2] = {{0,0},{1,0},{-bx,-bs},{1+bx,-bs}}; quad(p, s, 0, 0.75f); }  // top
+  { const float p[4][3] = {{iR,iB,-1},{iL,iB,-1},{oR,oB,zf},{oL,oB,zf}}; const float s[4][2] = {{1,1},{0,1},{1+bx,1+bs},{-bx,1+bs}}; quad(p, s, 0, 1.15f); } // bottom
+  // front of the frame: four flat bands
+  { const float p[4][3] = {{oL,oB,zf},{oL,oT,zf},{fL,fB,zf},{fL,fT,zf}}; const float s[4][2] = {{-bx,1+bs},{-bx,-bs},{-fx,1+fs},{-fx,-fs}}; quad(p, s, 1, 1.f); }
+  { const float p[4][3] = {{oR,oT,zf},{oR,oB,zf},{fR,fT,zf},{fR,fB,zf}}; const float s[4][2] = {{1+bx,-bs},{1+bx,1+bs},{1+fx,-fs},{1+fx,1+fs}}; quad(p, s, 1, 1.f); }
+  { const float p[4][3] = {{oL,oT,zf},{oR,oT,zf},{fL,fT,zf},{fR,fT,zf}}; const float s[4][2] = {{-bx,-bs},{1+bx,-bs},{-fx,-fs},{1+fx,-fs}}; quad(p, s, 1, 1.f); }
+  { const float p[4][3] = {{oR,oB,zf},{oL,oB,zf},{fR,fB,zf},{fL,fB,zf}}; const float s[4][2] = {{1+bx,1+bs},{-bx,1+bs},{1+fx,1+fs},{-fx,1+fs}}; quad(p, s, 1, 1.f); }
+  glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void DesktopXR::EndFrame()
