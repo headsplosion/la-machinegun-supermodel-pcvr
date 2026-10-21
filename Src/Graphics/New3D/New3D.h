@@ -323,6 +323,16 @@ private:
 	int				m_vrFbWidth = 0;
 	int				m_vrFbHeight = 0;
 	const VREye*	m_vrEye = nullptr;		// eye being drawn, nullptr = flat
+	// PC VR hand model (the gun in the player's hand)
+	UINT32			m_cachingAddr = 0;			// ROM model being cached (for its bounds)
+	std::unordered_map<UINT32, std::array<float, 7>> m_romBounds;	// ROM model: min xyz, max xyz, valid
+	std::unordered_map<UINT32, std::array<float, 3>> m_romCentroid;	// ROM model: vertex centroid
+	int				m_vrHandNode = -1;			// node holding the hand models this frame
+	int				m_vrHandFirst = -1;			// index of the first one in that node
+	int				m_vrHandCount = 0;
+	bool			m_vrHandDraw = false;		// true while drawing a headset eye
+	void			VRAddHandModels();
+	void			VRPoseHandModels(IVRFrameTarget* vr);
 	bool			m_vrSceneValid = false;	// nodes/VBO hold a drawable frame
 	float			m_vrCamTurn = 0.0f;			// degrees since the previous game frame
 	std::unordered_map<const void*, std::array<float, 9>> m_vrPrevRot;	// static models' rotation last frame

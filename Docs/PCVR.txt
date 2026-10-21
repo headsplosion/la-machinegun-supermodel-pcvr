@@ -59,6 +59,9 @@ Options menu (left controller's menu button)
                       the game's single gun takes turns between the two aim points, frame by
                       frame, so each hand gets about half the shots and the crosshair shows
                       (flickering) at both. With one trigger held, that hand is the gun.
+           Gun model in your hand - On / Off: the S.I.F.A.T. officers' gun from the game's
+                      cutscenes, drawn in the hand that holds the gun (both hands in akimbo).
+                      It is read from your own ROM while you play and shown only during play.
            Recoil vibration - Off / Light / Strong.
            Aim fine-tune - nudge the aim left/right and up/down in 0.1 degree steps, if the
                       crosshair sits a little off from where you point.
@@ -96,6 +99,9 @@ Settings (Config/Supermodel.ini, [ Global ])
   VRCinema, VRCinemaSize, VRCinemaDepth, VRCinemaGlow, VRCinemaBezel
                         cinema mode on/off, screen size 0-2, 3D depth 0 flat / 1 shallow / 2 full
   VRGunHand             0 = either, 1 = right, 2 = left, 3 = both (akimbo)
+  VRGunModel            1 = the game's gun model in your hand
+  VRGunModelLength      its length in metres (0.75); VRGunModelFlip / VRGunModelUpsideDown = 1
+                        turn it round or over if a headset's controller pose needs it
   VRRecoil              0 = off, 1 = light, 2 = strong
   VRAimNudgeX/Y         aim fine-tune in degrees
   VRHudFilter           0 = soft, 1 = sharp, 2 = smooth edges

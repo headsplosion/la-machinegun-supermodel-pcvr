@@ -42,6 +42,7 @@ namespace New3D {
 static IVRFrameTarget* s_vrTarget = nullptr;
 void SetVRFrameTarget(IVRFrameTarget* target) { s_vrTarget = target; }
 IVRFrameTarget* GetVRFrameTarget() { return s_vrTarget; }
+VRHandModel g_vrHandModel;
 
 CNew3D::CNew3D(const Util::Config::Node &config, const std::string& gameName) : 
 	m_gameName(gameName),
@@ -374,6 +375,10 @@ bool CNew3D::RenderScene(int priority, bool renderOverlay, Layer layer)
 
 		for (auto &m : n.models) {
 
+			if (m.vrOnly && (!m_vrHandDraw || m.vrHidden)) {
+				continue;
+			}
+
 			bool matrixLoaded = false;
 
 			if (m.meshes->empty()) {
@@ -595,9 +600,11 @@ bool CNew3D::GetMainViewportRows(int& firstRow, int& endRow) const
 		}
 		// the main 3D view: most models (a crosshair or overlay viewport has only a few),
 		// then the tallest
-		if (!best || n.models.size() > bestModels || (n.models.size() == bestModels && vp.vpHeight > best->vpHeight)) {
+		size_t count = 0;
+		for (const auto& m : n.models) count += m.vrOnly ? 0 : 1;
+		if (!best || count > bestModels || (count == bestModels && vp.vpHeight > best->vpHeight)) {
 			best = &vp;
-			bestModels = n.models.size();
+			bestModels = count;
 		}
 	}
 	if (!best) {
@@ -643,6 +650,7 @@ bool CNew3D::GetMainViewportTangents(float& left, float& right, float& top, floa
 void CNew3D::BuildScene(void)
 {
 	RenderViewport(0x800000);						// build model structure
+	VRAddHandModels();								// PC VR: the gun in the player's hand
 	
 	m_vbo.Bind(true);
 	m_vbo.BufferSubData(MAX_ROM_VERTS*sizeof(FVertex), m_polyBufferRam.size()*sizeof(FVertex), m_polyBufferRam.data());	// upload all the dynamic data to GPU in one go
@@ -876,6 +884,134 @@ void CNew3D::DrawVRFlat(IVRFrameTarget* vr)
 	}
 }
 
+
+// ---- PC VR: a ROM model held in the player's hand -----------------------------------------
+// The VR layer names a model by its VROM address (g_vrHandModel). Each game frame two copies of
+// it are added to the main 3D view, hidden; before the eyes are drawn they get the controller
+// poses. They are drawn only into the headset eyes.
+
+void CNew3D::VRAddHandModels()
+{
+	m_vrHandNode = -1;
+	m_vrHandFirst = -1;
+	m_vrHandCount = 0;
+	const UINT32 addr = g_vrHandModel.address;
+	if (!GetVRFrameTarget() || !addr || !IsVROMModel(addr)) {
+		return;
+	}
+	auto& meshes = m_romMap[addr];
+	if (!meshes) {
+		meshes = std::make_shared<std::vector<Mesh>>();
+		Model tmp;
+		tmp.meshes = meshes;
+		tmp.dynamic = false;
+		m_cachingAddr = addr;
+		CacheModel(&tmp, TranslateModelAddress(addr));
+		m_cachingAddr = 0;
+	}
+	if (meshes->empty() || !m_romBounds.count(addr)) {
+		return;
+	}
+	int best = -1;
+	size_t bestModels = 0;
+	for (size_t i = 0; i < m_nodes.size(); i++) {
+		const Viewport& vp = m_nodes[i].viewport;
+		if (m_nodes[i].models.empty() || !VRIsMainViewport(vp.vpX, vp.vpWidth, vp.vpHeight)) {
+			continue;
+		}
+		if (best < 0 || m_nodes[i].models.size() > bestModels) {
+			best = (int)i;
+			bestModels = m_nodes[i].models.size();
+		}
+	}
+	if (best < 0) {
+		return;
+	}
+	auto& models = m_nodes[best].models;
+	m_vrHandNode = best;
+	m_vrHandFirst = (int)models.size();
+	for (int k = 0; k < 2; k++) {
+		Model g;
+		g.meshes = meshes;
+		g.dynamic = false;
+		g.vrOnly = true;
+		g.vrHidden = true;
+		for (int i = 0; i < 16; i++) {
+			g.modelMat[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+		}
+		models.push_back(g);
+	}
+	m_vrHandCount = 2;
+}
+
+void CNew3D::VRPoseHandModels(IVRFrameTarget* vr)
+{
+	if (m_vrHandNode < 0 || m_vrHandNode >= (int)m_nodes.size()) {
+		return;
+	}
+	auto& models = m_nodes[m_vrHandNode].models;
+	if (m_vrHandFirst < 0 || m_vrHandFirst + m_vrHandCount > (int)models.size()) {
+		return;
+	}
+	VRHandPose poses[2];
+	const int count = vr->HandPoses(poses, 2);
+	const UINT32 addr = g_vrHandModel.address;
+	const auto bi = m_romBounds.find(addr);
+	const auto ci = m_romCentroid.find(addr);
+	for (int k = 0; k < m_vrHandCount; k++) {
+		Model& g = models[m_vrHandFirst + k];
+		g.vrHidden = true;
+		if (k >= count || bi == m_romBounds.end() || ci == m_romCentroid.end()) {
+			continue;
+		}
+		const auto& b = bi->second;
+		const auto& cen = ci->second;
+		float d[3], mid[3];
+		for (int a = 0; a < 3; a++) {
+			d[a] = b[3 + a] - b[a];
+			mid[a] = 0.5f * (b[3 + a] + b[a]);
+		}
+		// longest side = barrel; the next one = up; the last one = sideways
+		int L = 0;
+		for (int a = 1; a < 3; a++) if (d[a] > d[L]) L = a;
+		int U = (L + 1) % 3, W = (L + 2) % 3;
+		if (d[W] > d[U]) std::swap(U, W);
+		const float len = d[L];
+		if (len <= 1e-6f) {
+			continue;
+		}
+		// The grip / receiver end is the bulky one: the vertices' centre leans towards it.
+		const float bulky = cen[L] >= mid[L] ? 1.0f : -1.0f;
+		const float barrel = g_vrHandModel.flip ? bulky : -bulky;	// direction of the muzzle along L
+		const float up = g_vrHandModel.upsideDown ? -1.0f : 1.0f;
+		// rows of the model -> controller rotation: x = sx*W, y = up*U, z = -barrel*L
+		float rowsP[3][3] = { {0,0,0}, {0,0,0}, {0,0,0} };
+		rowsP[0][W] = 1.0f; rowsP[1][U] = 1.0f; rowsP[2][L] = 1.0f;
+		const float detP = rowsP[0][0] * (rowsP[1][1] * rowsP[2][2] - rowsP[1][2] * rowsP[2][1])
+						 - rowsP[0][1] * (rowsP[1][0] * rowsP[2][2] - rowsP[1][2] * rowsP[2][0])
+						 + rowsP[0][2] * (rowsP[1][0] * rowsP[2][1] - rowsP[1][1] * rowsP[2][0]);
+		const float sx = up * -barrel * detP;		// keeps it a rotation (no mirroring)
+		float A[3][3] = { {0,0,0}, {0,0,0}, {0,0,0} };
+		A[0][W] = sx; A[1][U] = up; A[2][L] = -barrel;
+		// grip point: on the centre line, gripFrac of the length in from the bulky end
+		float grip[3] = { mid[0], mid[1], mid[2] };
+		grip[L] = (bulky > 0 ? b[3 + L] : b[L]) - bulky * g_vrHandModel.gripFrac * len;
+		const float s = poses[k].unitsPerMeter * g_vrHandModel.length / len;
+		// local = s * A * (v - grip)
+		float local[16];
+		for (int col = 0; col < 3; col++)
+			for (int row = 0; row < 3; row++)
+				local[col * 4 + row] = s * A[row][col];
+		for (int row = 0; row < 3; row++)
+			local[12 + row] = -s * (A[row][0] * grip[0] + A[row][1] * grip[1] + A[row][2] * grip[2]);
+		local[3] = local[7] = local[11] = 0.0f;
+		local[15] = 1.0f;
+		VRMul4(poses[k].pose, local, g.modelMat);
+		g.scale = s;		// the shader divides normals by it, keeping the lighting right
+		g.vrHidden = false;
+	}
+}
+
 void CNew3D::DrawEyes(bool newFrame)
 {
 	IVRFrameTarget* vr = GetVRFrameTarget();
@@ -923,6 +1059,8 @@ void CNew3D::DrawEyes(bool newFrame)
 	const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
 	glDisable(GL_SCISSOR_TEST);
 
+	VRPoseHandModels(vr);
+
 	for (int e = 0; e < vr->EyeCount(); e++) {
 
 		VREye eye;
@@ -964,7 +1102,9 @@ void CNew3D::DrawEyes(bool newFrame)
 		m_r3dShader.SetVREye(&eye);
 
 		m_vpFilter = VPFilter::mainOnly;		// small viewports go to the screen panel instead
+		m_vrHandDraw = true;
 		DrawScene(m_vrFrameBuffers, false, eye.fbo);
+		m_vrHandDraw = false;
 		m_vpFilter = VPFilter::all;
 
 		m_r3dShader.SetVREye(nullptr);
@@ -1080,7 +1220,9 @@ bool CNew3D::DrawModel(UINT32 modelAddr)
 	m->alpha			= m_nodeAttribs.currentModelAlpha;
 
 	if (!cached) {
+		m_cachingAddr = IsVROMModel(modelAddr) ? modelAddr : 0;
 		CacheModel(m, modelAddress);
+		m_cachingAddr = 0;
 	}
 
 	return true;
@@ -1997,6 +2139,28 @@ void CNew3D::CacheModel(Model *m, const UINT32 *data)
 
 	// we know how many meshes we have to reserve appropriate space
 	m->meshes->reserve(sMap.size());
+
+	if (m_cachingAddr) {	// PC VR: size and centre of ROM models, for holding one in the player's hand
+		std::array<float, 7> b = { 1e30f, 1e30f, 1e30f, -1e30f, -1e30f, -1e30f, 0.0f };
+		std::array<float, 3> c = { 0.0f, 0.0f, 0.0f };
+		double count = 0.0;
+		for (auto& it : sMap) {
+			for (auto& v : it.second.verts) {
+				for (int k = 0; k < 3; k++) {
+					b[k] = std::min(b[k], v.base.pos[k]);
+					b[3 + k] = std::max(b[3 + k], v.base.pos[k]);
+					c[k] += v.base.pos[k];
+				}
+				count += 1.0;
+			}
+		}
+		if (count > 0.0) {
+			b[6] = 1.0f;
+			for (int k = 0; k < 3; k++) c[k] = (float)(c[k] / count);
+			m_romBounds[m_cachingAddr] = b;
+			m_romCentroid[m_cachingAddr] = c;
+		}
+	}
 
 	for (auto& it : sMap) {
 

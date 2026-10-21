@@ -293,6 +293,13 @@ private:
   float      m_menuGrabDist = 0.f;    // distance along that hand's ray to the grabbed point
   float      m_menuGrabX = 0.f, m_menuGrabY = 0.f;   // grabbed point relative to the panel centre (metres)
   bool       m_prevGrip[2] = {false, false};
+  XrPosef    m_handPose[2] = {};      // controller aim poses this frame (local space)
+  bool       m_handPoseValid[2] = {false, false};
+  int        m_gunHands = 0;          // bit per hand (0 right, 1 left) that holds the gun model
+public:
+  void SetGunHands(int mask) { m_gunHands = mask; }
+  int  HandPoses(New3D::VRHandPose* out, int max) const override;
+private:
 };
 
 #endif

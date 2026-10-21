@@ -1450,6 +1450,34 @@ void DesktopXR::DrawCinemaInEye(const New3D::VREye& eye)
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+int DesktopXR::HandPoses(New3D::VRHandPose* out, int max) const
+{
+  // Controller aim poses for the hands that hold the gun model, in the same space and units
+  // as the eye views (see ComputeEye): rotation as is, position in world units.
+  int n = 0;
+  if (!m_inPlay || m_config.cinema)
+    return 0;   // only during play, and never in cinema mode
+  const float s = m_config.worldUnitsPerMeter;
+  for (int h = 0; h < 2 && n < max; h++) {
+    if (!(m_gunHands & (1 << h)) || !m_handPoseValid[h])
+      continue;
+    XrVector3f pos = m_handPose[h].position;
+    if (!m_config.positionalTracking)
+      pos = {pos.x - m_headPose.position.x, pos.y - m_headPose.position.y, pos.z - m_headPose.position.z};
+    float r[9];
+    QuatToMat3(m_handPose[h].orientation, r);
+    float* m = out[n].pose;
+    for (int col = 0; col < 3; col++)
+      for (int row = 0; row < 3; row++)
+        m[col * 4 + row] = r[col * 3 + row];   // QuatToMat3 is column-major
+    m[3] = m[7] = m[11] = 0.f;
+    m[12] = pos.x * s; m[13] = pos.y * s; m[14] = pos.z * s; m[15] = 1.f;
+    out[n].unitsPerMeter = s;
+    n++;
+  }
+  return n;
+}
+
 void DesktopXR::DrawCinemaBezel(const float* mvp, GLuint tex)
 {
   // Model space of the cinema screen: the picture is at z = -1 between m_gameL..R and m_gameB..T
@@ -2028,6 +2056,7 @@ void DesktopXR::SyncInput()
   };
 
   DesktopXRInput in;
+  m_handPoseValid[0] = m_handPoseValid[1] = false;
   in.buttonA = getBool(m_a, XR_NULL_PATH);
   in.buttonB = getBool(m_b, XR_NULL_PATH);
   in.buttonX = getBool(m_x, XR_NULL_PATH);
@@ -2066,6 +2095,8 @@ void DesktopXR::SyncInput()
     in.rayValid[h] = true;
     in.rayOrigin[h] = o;
     in.rayDir[h] = dir;
+    m_handPose[h] = loc.pose;
+    m_handPoseValid[h] = true;
     if (m_menuOpen) {
       // pointer on the menu panel
       const float cs = std::cos(m_menuYaw), sn = std::sin(m_menuYaw);

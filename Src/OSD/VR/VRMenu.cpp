@@ -354,6 +354,7 @@ VRMenuResult VRMenu::Render(VRSettings &s, float pointerU, float pointerV, bool 
     {
       static const char *const kHand[] = { "Either", "Right", "Left", "Both" };
       r.changed |= Choice("Gun hand (Both: a gun in each hand)", &s.gunHand, kHand, 4);
+      r.changed |= Toggle("Gun model in your hand", &s.gunModel);
       static const char *const kRecoil[] = { "Off", "Light", "Strong" };
       r.changed |= Choice("Recoil vibration", &s.recoil, kRecoil, 3);
       r.changed |= Stepper("Aim fine-tune: left / right", &s.aimNudgeX, 0.1f, -3.0f, 3.0f, "%+.1f deg");

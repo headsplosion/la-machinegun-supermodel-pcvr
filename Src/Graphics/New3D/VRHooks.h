@@ -50,6 +50,26 @@ struct VRScreenInfo
 	float		cameraTurn = 0;						// game camera rotation since the last game frame (degrees)
 };
 
+// A model the VR layer wants held in the player's hand (L.A. Machineguns: the S.I.F.A.T.
+// officers' gun). pose: column-major controller pose (rotation, translation already in world
+// units) relative to the recentred origin; unitsPerMeter: world units per metre.
+struct VRHandPose
+{
+	float pose[16];
+	float unitsPerMeter;
+};
+
+// Which ROM model to hold, and how. Set by the platform layer; 0 = none.
+struct VRHandModel
+{
+	unsigned	address		= 0;		// Real3D VROM model address
+	float		length		= 0.75f;	// metres, along the model's longest side
+	float		gripFrac	= 0.18f;	// where the hand holds it: fraction of the length from the bulky end
+	bool		flip		= false;	// barrel pointing the wrong way: turn it round
+	bool		upsideDown	= false;	// roll it over
+};
+extern VRHandModel g_vrHandModel;
+
 class IVRFrameTarget
 {
 public:
@@ -78,7 +98,12 @@ public:
 
 	// Half-angle tangent used to widen renderer-side culling while VR is active.
 	virtual float CullTangent() const { return 2.5f; }
+
+	// Controller poses that should hold g_vrHandModel this headset frame (up to 2).
+	virtual int  HandPoses(VRHandPose* out, int max) const { (void)out; (void)max; return 0; }
 };
+
+
 
 // Global hook (set by the platform layer, read by New3D). nullptr = flat rendering.
 void			SetVRFrameTarget(IVRFrameTarget* target);

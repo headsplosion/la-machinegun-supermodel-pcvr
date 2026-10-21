@@ -885,6 +885,7 @@ static void VRReadSettings()
   v.hudLock     = std::clamp(s_runtime_config["VRHudLock"].ValueAsDefault<int>(v.hudLock), 0, 2);
   v.hideP2      = s_runtime_config["VRHideP2Prompt"].ValueAsDefault<bool>(v.hideP2);
   v.staticFill  = s_runtime_config["VRStaticFill"].ValueAsDefault<bool>(v.staticFill);
+  v.gunModel    = s_runtime_config["VRGunModel"].ValueAsDefault<bool>(v.gunModel);
   v.recoil      = std::clamp(s_runtime_config["VRRecoil"].ValueAsDefault<int>(v.recoil), 0, 2);
   v.aimNudgeX   = std::clamp(s_runtime_config["VRAimNudgeX"].ValueAsDefault<float>(v.aimNudgeX), -3.0f, 3.0f);
   v.aimNudgeY   = std::clamp(s_runtime_config["VRAimNudgeY"].ValueAsDefault<float>(v.aimNudgeY), -3.0f, 3.0f);
@@ -923,6 +924,7 @@ static void VRSaveSettings()
     { "VRCinemaDepth", std::to_string(v.cinemaDepth) }, { "VRCinemaGlow", std::to_string(v.cinemaGlow) },
     { "VRCinemaBezel", std::to_string(v.cinemaBezel) },
     { "VRHudLock", std::to_string(v.hudLock) },     { "VRHideP2Prompt", v.hideP2 ? "1" : "0" },
+    { "VRGunModel", v.gunModel ? "1" : "0" },
     { "VRStaticFill", v.staticFill ? "1" : "0" },   { "VRRecoil", std::to_string(v.recoil) },
     { "VRAimNudgeX", f(v.aimNudgeX) },              { "VRAimNudgeY", f(v.aimNudgeY) },
     { "VRResolutionScale", f(v.renderScale) },      { "VRHudFilter", std::to_string(v.hudFilter) },
@@ -1420,6 +1422,16 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       // Player 2's "PRESS START BUTTON" during play: the game draws it into its own tiles
       // (0x3300-0x3331) on 2D layer 0, name-table rows 45-46, right half. Only those tiles are left out,
       // so subtitles and everything else in that corner stay.
+      // The gun held by the S.I.F.A.T. officers in the game's cutscenes (a VROM model, read from
+      // the player's own ROM at run time). Tuning keys for other runtimes/controllers:
+      // VRGunModelLength (metres), VRGunModelFlip, VRGunModelUpsideDown.
+      if (game.name == "lamachin")
+      {
+        New3D::g_vrHandModel.address    = 0x004a19c8;
+        New3D::g_vrHandModel.length     = s_runtime_config["VRGunModelLength"].ValueAsDefault<float>(0.75f);
+        New3D::g_vrHandModel.flip       = s_runtime_config["VRGunModelFlip"].ValueAsDefault<bool>(false);
+        New3D::g_vrHandModel.upsideDown = s_runtime_config["VRGunModelUpsideDown"].ValueAsDefault<bool>(false);
+      }
       vrHideP2Tiles = (game.name == "lamachin");
       if (vrHideP2Tiles)
       {
@@ -1552,6 +1564,8 @@ int Supermodel(const Game &game, ROMSet *rom_set, IEmulator *Model3, CInputs *In
       }
       ApplyVRInput(*xr);
       g_tileGenHide.on = vrHideP2Tiles && s_vrSettings.hideP2 && xr->InPlay();
+      // gun model: in the hand that fires (Either), the chosen hand, or both (akimbo)
+      xr->SetGunHands(!s_vrSettings.gunModel ? 0 : s_vrSettings.gunHand == 3 ? 3 : (1 << s_vrGunHand));
 
       // Options menu: left controller's menu button opens/closes it; the game pauses meanwhile.
       {

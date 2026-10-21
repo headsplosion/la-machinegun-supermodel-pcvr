@@ -193,6 +193,11 @@ struct Model
 
 	//node transparency
 	float alpha = 1.0f;
+
+	// PC VR: a model added by the VR layer (the gun in the player's hand): drawn only into
+	// the headset eyes, never in the flat window or the game's light-gun reads
+	bool vrOnly = false;
+	bool vrHidden = false;
 };
 
 struct Viewport
