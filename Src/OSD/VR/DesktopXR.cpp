@@ -1084,7 +1084,17 @@ void DesktopXR::DrawMenuInEye(const New3D::VREye& eye)
   glBindFramebuffer(GL_FRAMEBUFFER, eye.fbo);
   glViewport(0, 0, eye.width, eye.height);
   glDisable(GL_SCISSOR_TEST);
-  glDisable(GL_DEPTH_TEST);
+  // Same space as the guns in your hands: test against their depth (drawn just before), so a
+  // gun nearer than the panel stays in front of it and one behind it is covered.
+  const bool gunDepth = m_gunDepthValid && m_gunDepth && m_gunDepthW == eye.width && m_gunDepthH == eye.height;
+  if (gunDepth) {
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_gunDepth);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_FALSE);
+  } else {
+    glDisable(GL_DEPTH_TEST);
+  }
   glDisable(GL_CULL_FACE);
   glEnable(GL_BLEND);
   glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);   // the menu image is premultiplied, see-through around the artwork
@@ -1122,6 +1132,11 @@ void DesktopXR::DrawMenuInEye(const New3D::VREye& eye)
   }
   glBindVertexArray(0);
   glUseProgram(0);
+  if (gunDepth) {
+    glDepthMask(GL_TRUE);
+    glDisable(GL_DEPTH_TEST);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
+  }
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -1571,8 +1586,8 @@ int DesktopXR::HandPoses(New3D::VRHandPose* out, int max) const
   // The game's gun inside the 3D scene: only during play, never in cinema mode (the VR layer
   // draws the guns itself there) and not when the custom model is chosen.
   int n = 0;
-  if (!m_inPlay || m_config.cinema || EffectiveGunMode() != 1)
-    return 0;
+  if (!m_inPlay || m_config.cinema || m_menuOpen || EffectiveGunMode() != 1)
+    return 0;   // with the menu open the VR layer draws the guns, in the same space as the menu
   for (int h = 0; h < 2 && n < max; h++) {
     if (!(m_gunHands & (1 << h)) || !HandMatrix(h, out[n].pose))
       continue;
@@ -1605,7 +1620,7 @@ void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
   // during play in the normal view is drawn by New3D, inside the scene.
   if (!m_gunProgram || mode == 0 || !m_gunHands)
     return;
-  if (mode == 1 && !m_config.cinema && m_inPlay)
+  if (mode == 1 && !m_config.cinema && m_inPlay && !(m_menuOpen && m_menuTex))
     return;
   const int slot = mode == 2 ? 1 : 0;
   if (slot == 1 && !m_customGun.empty()) {
@@ -1679,6 +1694,7 @@ void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
   glDisable(GL_DEPTH_TEST);
   glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, 0);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  m_gunDepthValid = true;
 }
 
 bool DesktopXR::LoadCustomGun(const std::string& objPath)
@@ -2173,6 +2189,7 @@ void DesktopXR::EndEye(int eye)
   if (eye < 0 || eye > 1)
     return;
   if (m_eyes[eye].acquired != UINT32_MAX) {
+    m_gunDepthValid = false;
     if (m_config.cinema) {
       DrawCinemaInEye(m_curEye[eye]);
       DrawHandGuns(m_curEye[eye]);

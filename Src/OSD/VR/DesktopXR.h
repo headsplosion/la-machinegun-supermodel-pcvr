@@ -293,6 +293,7 @@ private:
   GLint  m_uGunMvp = -1, m_uGunModel = -1, m_uGunEye = -1, m_uGunScreen = -1, m_uGunUseScreen = -1, m_uGunSpec = -1;
   float  m_customSpec = 0.5f, m_customShine = 90.f;   // Ks / Ns of the custom model's material
   GLuint m_gunDepth = 0;
+  bool   m_gunDepthValid = false;   // m_gunDepth holds this eye's guns (the menu is depth-tested against it)
   int    m_gunDepthW = 0, m_gunDepthH = 0;
   bool   m_cinemaValid[2] = {false, false};
   float  m_ipd = 0.064f;   // eye distance from the headset (metres)
