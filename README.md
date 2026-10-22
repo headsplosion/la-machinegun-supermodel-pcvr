@@ -9,9 +9,10 @@ Play Sega's 1998 light-gun arcade game **L.A. Machineguns: Rage of the Machines*
 - **Stereo 3D with head tracking.** The game's 3D world is drawn around you, beyond the edges of the original 4:3 screen.
 - **The controller is the gun.** The game's own crosshair follows the controller and lands where the shots go, anywhere in the headset's view.
 - **Two guns at once.** Optional akimbo mode: one gun in each hand for a single player.
+- **A gun in your hand.** The officers' gun from the game's cutscenes, read from your own ROM, sits in your hand from the moment the game starts, or bring your own 3D model (see below).
 - **Recoil.** The controller vibrates while you fire.
 - **Steady 60 fps.** The game runs at its real speed whatever the headset's refresh rate, and the headset never waits for the emulator.
-- **Cinema mode.** Play on a big screen in a dark room, flat or in 3D, with an optional glow: the picture's colours light up the room around the screen.
+- **Cinema mode.** Play on a big screen in a dark room, flat or in 3D. The screen can sit in a TV-cabinet frame whose inner walls softly reflect the picture, and an optional glow lets the picture's colours light up the room around it.
 - **Comfort options.** A vignette darkens the edges of your view during fast camera turns.
 - **Clean, readable overlay.** Score and text follow your head during play; menus and the title stay fixed in the room. The cutscene letterbox bars are removed, the hit "static" fills your whole view, and player 2's flashing PRESS START is hidden without touching the Japanese subtitles.
 - **In-headset options menu.** Every setting can be changed from the headset and is saved straight away.
@@ -40,6 +41,7 @@ Developed and tested on a Meta Quest 3 streamed with **Virtual Desktop** (VDXR r
 | A or Y | Start |
 | B or X | Coin |
 | Left menu button | Open / close the options menu (the game pauses) |
+| Grip (side button) on the menu | Hold to pick the menu up and move it; let go to drop it |
 | Either stick click | Re-centre the view |
 | Left grip + left stick click | Operator (test) menu |
 | Esc (PC keyboard) | Quit |
@@ -54,8 +56,10 @@ In the options menu, point at an option with either controller and pull the trig
 | | Cinema mode | Off / On: the game on a big screen in a dark room, no camera motion around you |
 | | Cinema screen size | Small / Medium / Large |
 | | Cinema 3D depth | Flat / Shallow / Full |
+| | Screen bezel | Off / On: the cinema screen sits in a TV-cabinet frame that reflects the picture |
 | | Screen glow | Off / Subtle / Strong: the picture lights up the room around the cinema screen |
 | **Gun** | Gun hand | Either / Right / Left / Both (a gun in each hand) |
+| | Gun model in your hand | Off / Game (the gun from the game's cutscenes) / Custom (your own model) |
 | | Recoil vibration | Off / Light / Strong |
 | | Aim fine-tune | Nudge the aim left/right and up/down in 0.1° steps |
 | **Screen** | Score / timer / text | Fixed in the room / Follow head / Auto (head during play) |
@@ -65,6 +69,8 @@ In the options menu, point at an option with either controller and pull the trig
 | | Render resolution | 0.5× to 1.5× (applies on the next start) |
 
 The buttons at the bottom resume the game, re-centre the view or quit. Settings are saved to `Config/Supermodel.ini`. The menu's typeface is a bold version of [Michroma](https://github.com/googlefonts/Michroma-font) (SIL Open Font License); you can frame the menu with your own artwork, see `Assets/VR-MENU.txt`.
+
+**Your own gun model.** Put a Wavefront OBJ at `Assets/VRGunModel.obj` (with an optional `.mtl`) and choose *Gun model: Custom*. Units are metres, the hand / grip at the origin, the barrel pointing along −Z and +Y up. The material's `Kd` sets the colour, `Ks` (0–1) the strength of the sheen and `Ns` its sharpness (about 10 for matte plastic, 100 for glossy). Without the file the game's gun is used.
 
 For the smoothest play in Virtual Desktop, set Synchronous Spacewarp to **Disabled** and the frame rate to 72, 90 or 120 Hz. All VR settings are in `Config/Supermodel.ini`, documented in [`Docs/PCVR.txt`](Docs/PCVR.txt).
 
