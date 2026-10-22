@@ -18,6 +18,15 @@ Play Sega's 1998 light-gun arcade game **L.A. Machineguns: Rage of the Machines*
 - **In-headset options menu.** Every setting can be changed from the headset and is saved straight away.
 - **Fast start.** After the first run, the game opens on the SEGA logo; the long boot test is skipped.
 
+<p align="center">
+  <img src="Docs/Images/vr-gun.jpg" width="620" alt="In the headset: the world beyond the original screen edge, with the game's gun in each hand (akimbo)" /><br/>
+  <em>In the headset: the 3D world beyond the original screen, with the game's gun in each hand.</em>
+</p>
+<p align="center">
+  <img src="Docs/Images/cinema-mode.jpg" width="620" alt="Cinema mode: the game on a big screen in a TV-cabinet frame, the picture glowing on the room, guns in hand" /><br/>
+  <em>Cinema mode: the big screen in its TV-cabinet frame, the glow lighting the room, and the guns in front.</em>
+</p>
+
 Developed and tested on a Meta Quest 3 streamed with **Virtual Desktop** (VDXR runtime). Meta Quest Link and SteamVR are standard OpenXR runtimes and should work too.
 
 > **No game files are included.** You need your own `lamachin.zip` ROM set, dumped from hardware you own. Please don't open issues or pull requests asking for ROMs.
