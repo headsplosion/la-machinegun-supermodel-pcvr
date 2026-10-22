@@ -796,13 +796,15 @@ uniform sampler2D uScreen;
 uniform float uUseScreen;
 uniform vec2 uSpec;      // specular strength (Ks), shininess (Ns)
 out vec4 fragColor;
-vec3 room(vec3 d, vec3 sc)
+vec3 room(vec3 d, vec3 sc, float rough)
 {
-  // d: direction; the screen sits ahead (-Z), slightly above eye level
+  // d: direction; the screen sits ahead (-Z), slightly above eye level. A rougher surface
+  // sees it as a wider, dimmer blur (matte plastic) instead of a sharp mirror image.
   float up = d.y;
-  vec3 c = mix(vec3(0.015), vec3(0.06), smoothstep(-0.3, 0.6, up));
-  float scr = smoothstep(0.80, 0.97, dot(d, normalize(vec3(0.0, 0.08, -1.0))));
-  return c + scr * sc * 1.4;
+  vec3 c = mix(vec3(0.015), vec3(0.05), smoothstep(-0.3, 0.6, up));
+  float scr = smoothstep(mix(0.80, 0.15, rough), mix(0.97, 0.85, rough),
+                         dot(d, normalize(vec3(0.0, 0.08, -1.0))));
+  return c + scr * sc * mix(1.4, 0.30, rough);
 }
 void main()
 {
@@ -821,9 +823,11 @@ void main()
   float norm = (ns + 8.0) / 25.0;               // energy-normalised Blinn
   float s1 = pow(max(dot(n, normalize(ls + v)), 0.0), ns) * norm;
   float s2 = pow(max(dot(n, normalize(lt + v)), 0.0), ns) * norm;
-  float fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+  float rough = clamp(1.0 - log2(ns) / 9.0, 0.0, 1.0);   // Ns 10 -> 0.63, Ns 90 -> 0.28
+  // rough surfaces lose most of the grazing-angle mirror effect
+  float fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0) * mix(1.0, 0.2, rough);
   vec3 spec = uSpec.x * (0.30 * s1 * mix(vec3(1.0), sc, 0.35) + 0.22 * s2);
-  vec3 refl = room(reflect(-v, n), sc) * fres * (0.4 + uSpec.x);
+  vec3 refl = room(reflect(-v, n), sc, rough) * fres * (0.4 + uSpec.x);
   fragColor = vec4(diffuse + spec + refl, 1.0);
 }
 )";
@@ -1651,7 +1655,7 @@ void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
   if (slot == 1)
     glUniform2f(m_uGunSpec, m_customSpec, m_customShine);
   else
-    glUniform2f(m_uGunSpec, 0.35f, 40.f);
+    glUniform2f(m_uGunSpec, 0.25f, 20.f);   // the game's gun: satin
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, useScreen ? m_cinemaTex[v] : 0);
   glUniform1i(m_uGunScreen, 0);
@@ -1762,8 +1766,8 @@ bool DesktopXR::LoadCustomGun(const std::string& objPath)
   if (out.empty())
     return false;
   m_customGun.swap(out);
-  m_customSpec = ks >= 0.f ? std::min(ks, 1.f) : 0.5f;
-  m_customShine = nsh > 0.f ? std::min(nsh, 500.f) : 90.f;
+  m_customSpec = ks >= 0.f ? std::min(ks, 1.f) : 0.2f;
+  m_customShine = nsh > 0.f ? std::min(nsh, 500.f) : 14.f;
   m_gunCount[1] = 0;
   return true;
 }

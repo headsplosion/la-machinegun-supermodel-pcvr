@@ -106,7 +106,8 @@ Settings (Config/Supermodel.ini, [ Global ])
                         of the screen and lit by it.
                         Your own model: a Wavefront OBJ in metres, the hand / grip at the origin,
                         barrel pointing along -Z, +Y up; colour from the Kd of its .mtl, plastic
-                        gloss from Ks (highlight strength, 0-1) and Ns (sharpness, ~10-200).
+                        gloss from Ks (highlight strength, 0-1) and Ns (sharpness: ~10 matte,
+                        ~100 glossy; low values also blur the reflections).
                         The guns are shown from the moment the game starts, not only in play.
   VRGunModelLength      its length in metres (0.75); VRGunModelFlip / VRGunModelUpsideDown = 1
                         turn it round or over if a headset's controller pose needs it
