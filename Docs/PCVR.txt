@@ -59,9 +59,10 @@ Options menu (left controller's menu button)
                       the game's single gun takes turns between the two aim points, frame by
                       frame, so each hand gets about half the shots and the crosshair shows
                       (flickering) at both. With one trigger held, that hand is the gun.
-           Gun model in your hand - On / Off: the S.I.F.A.T. officers' gun from the game's
-                      cutscenes, drawn in the hand that holds the gun (both hands in akimbo).
-                      It is read from your own ROM while you play and shown only during play.
+           Gun model in your hand - Off / Game / Custom. Game: the S.I.F.A.T. officers' gun
+                      from the game's cutscenes, read from your own ROM. Custom: your own model
+                      (Assets/VRGunModel.obj, see VRGunModel below). Drawn in the hand that
+                      holds the gun (both hands in akimbo), from the moment the game starts.
            Recoil vibration - Off / Light / Strong.
            Aim fine-tune - nudge the aim left/right and up/down in 0.1 degree steps, if the
                       crosshair sits a little off from where you point.
@@ -104,7 +105,9 @@ Settings (Config/Supermodel.ini, [ Global ])
                         game's gun if the file is missing). Shown in cinema mode too, in front
                         of the screen and lit by it.
                         Your own model: a Wavefront OBJ in metres, the hand / grip at the origin,
-                        barrel pointing along -Z, +Y up; colours from the Kd of its .mtl.
+                        barrel pointing along -Z, +Y up; colour from the Kd of its .mtl, plastic
+                        gloss from Ks (highlight strength, 0-1) and Ns (sharpness, ~10-200).
+                        The guns are shown from the moment the game starts, not only in play.
   VRGunModelLength      its length in metres (0.75); VRGunModelFlip / VRGunModelUpsideDown = 1
                         turn it round or over if a headset's controller pose needs it
   VRRecoil              0 = off, 1 = light, 2 = strong

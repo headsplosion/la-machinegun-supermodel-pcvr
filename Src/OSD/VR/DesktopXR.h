@@ -290,7 +290,8 @@ private:
   GLuint m_gunProgram = 0, m_gunVao[2] = {0, 0}, m_gunVbo[2] = {0, 0};   // 0 = game gun, 1 = custom
   GLsizei m_gunCount[2] = {0, 0};
   unsigned m_gunVersion = ~0u;
-  GLint  m_uGunMvp = -1, m_uGunModel = -1, m_uGunEye = -1, m_uGunScreen = -1, m_uGunUseScreen = -1;
+  GLint  m_uGunMvp = -1, m_uGunModel = -1, m_uGunEye = -1, m_uGunScreen = -1, m_uGunUseScreen = -1, m_uGunSpec = -1;
+  float  m_customSpec = 0.5f, m_customShine = 90.f;   // Ks / Ns of the custom model's material
   GLuint m_gunDepth = 0;
   int    m_gunDepthW = 0, m_gunDepthH = 0;
   bool   m_cinemaValid[2] = {false, false};

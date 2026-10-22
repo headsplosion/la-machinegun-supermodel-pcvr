@@ -786,13 +786,24 @@ void main()
 )";
 
 const char* kGunFS = R"(#version 330 core
+// Moulded plastic: soft diffuse, a white (uncoloured) glossy highlight and a Fresnel sheen
+// that reflects the room - the bright cinema screen in front, a dim ceiling, a dark floor.
 in vec3 vNrm;
 in vec3 vCol;
 in vec3 vWorld;
 uniform vec3 uEye;
 uniform sampler2D uScreen;
 uniform float uUseScreen;
+uniform vec2 uSpec;      // specular strength (Ks), shininess (Ns)
 out vec4 fragColor;
+vec3 room(vec3 d, vec3 sc)
+{
+  // d: direction; the screen sits ahead (-Z), slightly above eye level
+  float up = d.y;
+  vec3 c = mix(vec3(0.015), vec3(0.06), smoothstep(-0.3, 0.6, up));
+  float scr = smoothstep(0.80, 0.97, dot(d, normalize(vec3(0.0, 0.08, -1.0))));
+  return c + scr * sc * 1.4;
+}
 void main()
 {
   vec3 n = normalize(vNrm);
@@ -803,14 +814,17 @@ void main()
     sc = clamp(textureLod(uScreen, vec2(0.5), 16.0).rgb * 1.6 + 0.12, 0.0, 1.0);
   vec3 ls = normalize(vec3(0.0, 0.15, -1.0));   // towards the screen
   vec3 lt = normalize(vec3(0.3, 1.0, 0.25));    // room light from above
-  float dt = max(dot(n, lt), 0.0);
-  float ds = max(dot(n, ls), 0.0);
-  float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
-  vec3 light = vec3(0.30) + 0.60 * dt * vec3(1.0) + 0.75 * ds * sc;
-  float sp1 = pow(max(dot(n, normalize(ls + v)), 0.0), 40.0);
-  float sp2 = pow(max(dot(n, normalize(lt + v)), 0.0), 24.0);
-  vec3 col = vCol * light + 0.35 * sp1 * sc + 0.18 * sp2 + 0.10 * rim * sc;
-  fragColor = vec4(col, 1.0);
+  float wt = max(dot(n, lt) * 0.6 + 0.4, 0.0);  // wrapped: plastic scatters a little
+  float ws = max(dot(n, ls) * 0.7 + 0.3, 0.0);
+  vec3 diffuse = vCol * (vec3(0.18) + 0.55 * wt * wt * vec3(1.0) + 0.70 * ws * ws * sc);
+  float ns = max(uSpec.y, 1.0);
+  float norm = (ns + 8.0) / 25.0;               // energy-normalised Blinn
+  float s1 = pow(max(dot(n, normalize(ls + v)), 0.0), ns) * norm;
+  float s2 = pow(max(dot(n, normalize(lt + v)), 0.0), ns) * norm;
+  float fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+  vec3 spec = uSpec.x * (0.30 * s1 * mix(vec3(1.0), sc, 0.35) + 0.22 * s2);
+  vec3 refl = room(reflect(-v, n), sc) * fres * (0.4 + uSpec.x);
+  fragColor = vec4(diffuse + spec + refl, 1.0);
 }
 )";
 
@@ -848,6 +862,7 @@ bool DesktopXR::CreateShaders()
     m_uGunEye       = glGetUniformLocation(m_gunProgram, "uEye");
     m_uGunScreen    = glGetUniformLocation(m_gunProgram, "uScreen");
     m_uGunUseScreen = glGetUniformLocation(m_gunProgram, "uUseScreen");
+    m_uGunSpec      = glGetUniformLocation(m_gunProgram, "uSpec");
   }
   m_bezelProgram = LinkProgram(kBezelVS, kBezelFS);
   if (m_bezelProgram) {
@@ -1582,10 +1597,12 @@ static void UploadGun(GLuint& vao, GLuint& vbo, GLsizei& count, const std::vecto
 void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
 {
   const int mode = EffectiveGunMode();
-  if (!m_gunProgram || !m_inPlay || mode == 0 || !m_gunHands)
+  // Shown from the moment the game starts (title, menus, cutscenes, play). Only the game's gun
+  // during play in the normal view is drawn by New3D, inside the scene.
+  if (!m_gunProgram || mode == 0 || !m_gunHands)
     return;
-  if (mode == 1 && !m_config.cinema)
-    return;   // drawn by New3D inside the scene
+  if (mode == 1 && !m_config.cinema && m_inPlay)
+    return;
   const int slot = mode == 2 ? 1 : 0;
   if (slot == 1 && !m_customGun.empty()) {
     UploadGun(m_gunVao[1], m_gunVbo[1], m_gunCount[1], m_customGun);
@@ -1631,6 +1648,10 @@ void DesktopXR::DrawHandGuns(const New3D::VREye& eye)
   glUseProgram(m_gunProgram);
   glUniform3f(m_uGunEye, ex, ey, ez);
   glUniform1f(m_uGunUseScreen, useScreen ? 1.f : 0.f);
+  if (slot == 1)
+    glUniform2f(m_uGunSpec, m_customSpec, m_customShine);
+  else
+    glUniform2f(m_uGunSpec, 0.35f, 40.f);
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, useScreen ? m_cinemaTex[v] : 0);
   glUniform1i(m_uGunScreen, 0);
@@ -1668,6 +1689,7 @@ bool DesktopXR::LoadCustomGun(const std::string& objPath)
   dir = slash == std::string::npos ? std::string() : dir.substr(0, slash + 1);
   std::vector<float> pos, nrm, out;
   std::vector<std::pair<std::string, std::array<float, 3>>> mats;
+  float ks = -1.f, nsh = -1.f;
   std::array<float, 3> kd = {0.5f, 0.5f, 0.5f};
   auto loadMtl = [&](const std::string& name) {
     FILE* m = fopen((dir + name).c_str(), "rb");
@@ -1679,6 +1701,10 @@ bool DesktopXR::LoadCustomGun(const std::string& objPath)
         mats.push_back({cur, {0.5f, 0.5f, 0.5f}});
       else if (sscanf(line, " Kd %f %f %f", &r, &g, &b) == 3 && !mats.empty())
         mats.back().second = {r, g, b};
+      else if (sscanf(line, " Ks %f %f %f", &r, &g, &b) == 3 && ks < 0.f)
+        ks = (r + g + b) / 3.f;   // one value for the whole model (the first material's)
+      else if (sscanf(line, " Ns %f", &r) == 1 && nsh < 0.f)
+        nsh = r;
     }
     fclose(m);
   };
@@ -1736,6 +1762,8 @@ bool DesktopXR::LoadCustomGun(const std::string& objPath)
   if (out.empty())
     return false;
   m_customGun.swap(out);
+  m_customSpec = ks >= 0.f ? std::min(ks, 1.f) : 0.5f;
+  m_customShine = nsh > 0.f ? std::min(nsh, 500.f) : 90.f;
   m_gunCount[1] = 0;
   return true;
 }
